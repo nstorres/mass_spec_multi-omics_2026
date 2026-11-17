@@ -2,7 +2,7 @@
 
 ### Slido Link
 
-<Available day of workshop>
+(Available day of workshop)
 
 ### Link to this Repository:
 
@@ -79,4 +79,4 @@ Open the Day 2 R markdown file in scripts/.
 
 #### Wrap up
 
-<Minute card available end of second day>
+(Minute card available end of second day)
