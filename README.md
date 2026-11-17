@@ -14,7 +14,7 @@ Filipa Blasco Lopes, PhD (u6071085@utah.edu)
 
 ### Link to this Repository:
 
-https://github.com/pstew/upag_2026
+https://github.com/pstew/mass_spec_multi-omics_2026/
 
 ### R/RStudio download
 
