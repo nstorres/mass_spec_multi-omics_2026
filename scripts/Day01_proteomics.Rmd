@@ -1,0 +1,932 @@
+---
+title: "Proteomics Data Analysis Workshop: Day 1"
+author: Paul Stewart
+output:
+  html_document:
+    toc: true
+    toc_float: true
+  pdf_document:
+    toc: true
+    latex_engine: xelatex
+params:
+  run_enrichr: false
+---
+
+# Introduction
+
+See https://github.com/pstew/mass_spec_multi-omics_2026/ if you have not already.
+
+## Set up RStudio
+
+Once R and RStudio are installed, open `mass_spec_multi-omics_2026.Rproj` in the supplied workshop folder and open this R Markdown file from `scripts/`. The package installation chunks are marked `eval = FALSE` so they can be run manually when needed. [RStudio Desktop download](https://posit.co/download/rstudio-desktop/).
+
+Before we start writing or editing code, there are a few settings in RStudio that can make your experience much more comfortable. One helpful option is to turn on Soft Wrap, so that long lines of code or text automatically wrap within the editor window instead of scrolling off to the right. You can enable this by going to Tools -> Global Options -> Code -> Editing and checking Soft-wrap source files.
+
+Another useful feature is Rainbow Parentheses, which color-matches pairs of parentheses and brackets to help you keep track of nesting. This is especially helpful when working with complex expressions. You can turn this on under Tools -> Global Options -> Code -> Display by checking Rainbow parentheses.
+
+Finally, you may want to change the background color of the RStudio editor to something easier on the eyes. To do this, go to Tools -> Global Options -> Appearance and choose a different editor theme, such as "Tomorrow Night" for a dark background or "Textmate" for a clean, light look.
+
+## R Markdown
+
+This is an R Markdown file (or the PDF report generated from it, depending on what you are reading). R Markdown lets us combine regular text and executable code in a single document. You can run code chunks interactively or use the Knit button to create a formatted report (such as a PDF, HTML, or Word document). We will focus first on running code interactively and touch on reports towards the end. For the most part, code run through an R Markdown file are equivalent to them being run in the console.
+
+In an R Markdown file, we use text characters to format other text that appear once the document is rendered into the formatted report.
+
+- Lines that begin with # are section headers.
+ - \# creates a main section
+ - \#\# creates a subsection
+- \*'s around some text will *italicize* it 
+- A single \- followed by a space will make a bulleted list
+
+Run a whole chunk with its green arrow. Cmd + Enter on a Mac or Ctrl + Enter on Windows runs the current line or selection. Output from a chunk appears underneath it. 
+
+# R mini tutorial
+
+We will practice these R basics together before we open the protein table.
+
+- Variables
+- Vectors
+- The `:` sequence operator
+- Logical operators such as `==`, `!=`, `&`, `|`, and `!`
+- The `%in%` operator
+- Data frames
+- Subsetting with brackets and `subset()`
+- `for` loops
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(fig.width = 8, fig.height = 6,
+                      message = FALSE, warning = TRUE)
+```
+
+# Read in and view data
+
+## Set the working directory
+
+It is important that R knows where to look for your files. This is controlled by the working directory. If R is giving you an error about a file not existing but you are sure it does, then the most common problem is that  the working directory was not set correctly (second most common is that there is a typo in your file location).
+
+If we are using an R Project (which we are), the working directory is automatically set to the folder that contains the .Rproj file. However, since we are working in an R Markdown document, it may default the working directory to the location of the .Rmd file instead. This can be confusing, especially when code behaves differently depending on whether it is run in the console or inside chunks.
+
+To fix this, we will explicitly set the working directory using the here package. This ensures that all file paths are interpreted relative to the folder where the R Project is located, rather than where the .Rmd file happens to live.
+
+To install the here package, run this command in the console. The chunk below has the option eval = FALSE, which means it will not be evaluated when we knit the document or run all chunks at once. However, we can still run it manually using the green arrow or by placing your cursor in the chunk and pressing Ctrl + Enter (or Cmd + Enter on Mac).
+
+
+```{r, eval = FALSE}
+install.packages("here")
+```
+
+By default, this installs the package from CRAN, the Comprehensive R Archive Network (https://cran.r-project.org), which is the main repository for R packages (in addition to hosting the R package and source code). 
+
+Once it is installed, load the here package using
+
+```{r}
+library(here)
+```
+
+We will now add a setup chunk that sets the root directory for the entire document. We name it "setup" so it is easy to find; run it before the chunks that read files:
+
+```{r setup}
+here::i_am("scripts/Day01_proteomics.Rmd")
+knitr::opts_knit$set(root.dir = here::here())
+dir.create(here::here("work"), showWarnings = FALSE)
+```
+
+## Experimental data
+
+Now let us load the protein abundance data (which we may also refer to as protein expression). We give it a short, descriptive variable name like prot so we know what the contents are without having to look at the contents. Header = TRUE means that the first row will be used for the column names, and row.names = 1 indicates that the first column will be used for the row names:
+
+```{r}
+prot_raw = read.delim("data/dia_lfq_protein_updated_headers_2026-07-16.txt",
+                      header = TRUE, row.names = 1, check.names = FALSE)
+prot = prot_raw # keep the original values so we can repeat the log2 step safely
+```
+
+Let us also load the meta data (subsequently referred to as "meta" for shorthand):
+
+```{r}
+meta = read.delim("data/sample_meta_2026-07-16.txt", header = TRUE)
+```
+
+We can look at the first few rows with the head() function:
+
+```{r}
+head(prot)
+```
+
+Given we have 20 samples this is a little crowded, and the rows wrap around so it is not very easy to interpret. Let us just look at the first five rows and first five columns using square brackets and the ":" sequence operator:
+
+```{r}
+prot[1:5, 1:5]
+```
+
+We can look at the column names of prot
+
+```{r}
+head(names(prot))
+```
+
+as well as the row names:
+
+```{r}
+head(row.names(prot))
+```
+
+The meta data is narrow enough that it will not be too crowded if we show the whole thing. We can just evaluate the data frame with no other arguments to display it:
+
+```{r}
+meta
+```
+
+Let us use the subset() function on meta, which takes a data frame as an argument and returns a filtered subset of the original data  based on some criteria:
+
+```{r}
+meta_wt = subset(meta, genotype == "WT")
+```
+
+We can now use a very useful trick that forms the basis for most of our upcoming analyses. Say we only wanted the columns from the protein abundance for WT samples. We simply use meta_wt to get the columns we want from the protein data frame:
+
+```{r}
+head(prot[, meta_wt$expression_column])
+```
+
+This code produces the same result:
+
+```{r}
+head(prot[, meta_wt[, "expression_column"]])
+```
+
+This approach avoids hardcoding the wild type samples where we specify the column numbers:
+
+```{r}
+head(prot[, 11:20])
+```
+
+What if we specify columns 11-20 are originally WT, but then we change the data by adding or removing samples? Then columns 11-20 may no longer correspond to WT, and our subsequent analyses will be wrong. By using the expression_column from the meta, we will always be sure to get the wild type samples, regardless of their order. Importantly, this only works if header = TRUE was used when we read in the protein data such that meta_wt$expression_column corresponds to the header/column names of prot. If we need to delete a specific sample, then we should refer to it by its specific name (e.g. WT_TP_4) instead of the specific column (e.g. column 14).
+
+## Questions
+
+For this and future questions, create your own chunk in this markdown file after the questions. Bonus points if you can find the keyboard shortcut for making a new chunk (hint: it is in one of the drop-down menus).
+
+1. Data frames are examples of an object. Different objects have different properties. Prot and meta are both data frames. What happens if you put nrow(prot) in your chunk and run it? ncol(prot)? dim(prot)? summary(prot)? 
+
+2. Make a variable called fav_num, and assign your favorite number to it. What happens when you try to get the number of rows from it? What about summary()?
+
+3. How would you display the head of only the TP samples?
+
+4. Try running mean(prot) or sd(prot). What happens, and why? How could you make it work for a single column?
+
+5. What does class(meta) return? What about typeof(meta)?
+
+6. Try printing the first few row names using head(row.names(meta)). Do any of them match the column names of prot?
+
+7. Create your own subset of meta for only the TP timepoint. Can you use it to select the corresponding columns from prot?
+
+8. What does head(meta, 10) do? head(meta, 15)? head(meta, 21)?
+
+# Visualize data
+
+## Boxplot
+
+R has a built-in boxplot() function that can take a data frame as input:
+
+```{r}
+boxplot(prot[, meta$expression_column])
+```
+
+The result is not very informative. Proteomics intensities are often strongly right-skewed. This means many values cluster at the lower end, while a few extreme values stretch the plot upward, and plotting the values spans many orders of magnitude. As a result, it can be difficult to see detail in the lower part of the distribution. Additionally, the sample labels are not displaying clearly, making the plot harder to interpret.
+
+To improve this, we will start by applying a log2 transformation to the intensity values. This often makes the distribution more symmetric and makes ratios easier to interpret. A log2 transformation alone does not guarantee that the assumptions of a statistical test are satisfied.
+
+Each time we run this chunk, we start with `prot_raw` and make a fresh log2-transformed table called `prot`. If you rerun it after filtering, run the filter again before moving on.
+
+```{r log2-intensities}
+prot = log2(prot_raw[, meta$expression_column, drop = FALSE])
+prot[1:5, 1:5]
+```
+
+The observed intensities in this dataset are all positive and finite. If your dataset has zeros, negative values, or infinities and you decide they should be treated as missing, you can use brackets to replace those entries before taking `log2()`.
+
+```{r optional-log2-cleanup}
+# prot_clean = prot_raw[, meta$expression_column]
+# bad_values = !is.finite(as.matrix(prot_clean)) | prot_clean <= 0
+# prot_clean[bad_values] = NA_real_
+# prot_clean = log2(prot_clean)
+```
+
+Now that the data has been log2-transformed, let us replot it. Note that due to size constraints, there may be some overlap in the plot elements when this is knit into a PDF.
+
+```{r}
+# Increase bottom margin to fit longer x-axis labels; the pattern is bottom, left, top, right
+par(mar = c(10, 4, 2, 1))  
+
+# Draw boxplot
+boxplot(
+  prot[, meta$expression_column],
+  # use color directly from metadata
+  col = meta$color,
+  # x-axis labels = group names
+  names = meta$group,
+  las = 2,
+  xlab = "",
+  ylab = "log2(Intensity)",
+  main = "Log2-transformed protein intensities"
+)
+
+# Add legend (one entry per unique group-color combo)
+legend_groups = unique(meta[, c("group", "color")])
+
+legend(
+  "topright",
+  legend = legend_groups$group,
+  fill = legend_groups$color,
+  # scaling of the legend
+  cex = 0.8 
+)
+
+```
+
+It is now much easier to see what is happening in the data. After applying the log2 transformation, the intensities no longer span several orders of magnitude. Instead, the values are compressed into a more manageable range, roughly between 5 and 25 on the log2 scale. Notice how the medians nearly form a straight line across the boxes. Similar medians are consistent with prior LFQ processing, but a boxplot alone does not establish that normalization was adequate. 
+
+We should always watch for samples that behave abnormally in plots like these. For example, a sample with a much lower median than the others, even after normalization, might indicate a technical issue or sample failure. Color is also a helpful tool in data visualization. Here, the use of distinct colors makes it easy to separate the groups visually, even without referring to the legend. 
+
+## Boxplot with ggplot2
+
+While we will emphasize a lot of plotting using base R in this workshop, we will also take a look at the ggplot2 package. ggplot2 is part of the tidyverse suite of R packages, and it’s a powerful system for creating more polished and customizable plots. However, it usually requires more code and additional data preparation, especially for grouped plots like boxplots across multiple samples. When possible, we will stick to simpler base R plots to keep things clear, and introduce ggplot2 when we want more flexibility or aesthetics, but for the sake of demonstration let us make a box plot with ggplot2. 
+
+We will reuse the log2 intensities already stored in `prot`. For the ggplot2 version, we also need a few packages to prepare and plot the data.
+
+```{r, eval = FALSE}
+install.packages(c("tidyr", "dplyr", "ggplot2", "stringr"))
+```
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+
+# Subset protein abundance data
+expression_data = prot[
+  ,
+  meta$expression_column,
+  drop = FALSE
+]
+
+# Preserve protein names before reshaping
+expression_data$protein = rownames(expression_data)
+
+# Reshape to long format and add sample metadata
+long_df = expression_data %>%
+  pivot_longer(
+    cols = -protein,
+    names_to = "expression_column",
+    values_to = "intensity"
+  ) %>%
+  left_join(
+    meta[, c(
+      "expression_column",
+      "group",
+      "color"
+    )],
+    by = "expression_column"
+  ) %>%
+  filter(
+    is.finite(intensity)
+  )
+
+# Order samples exactly as they appear in meta
+long_df$expression_column = factor(
+  long_df$expression_column,
+  levels = meta$expression_column
+)
+
+# Order groups by their first appearance in meta
+group_order = unique(meta$group)
+
+long_df$group = factor(
+  long_df$group,
+  levels = group_order
+)
+
+# Match each sample column to its displayed group label
+x_labels = setNames(
+  meta$group,
+  meta$expression_column
+)
+
+# Create a named group-to-color vector in the same order
+group_colors = meta %>%
+  distinct(group, color) %>%
+  mutate(
+    group = factor(
+      group,
+      levels = group_order
+    )
+  ) %>%
+  arrange(group)
+
+group_colors = setNames(
+  group_colors$color,
+  as.character(group_colors$group)
+)
+
+# Plot one box per sample
+ggplot(
+  long_df,
+  aes(
+    x = expression_column,
+    y = intensity,
+    fill = group
+  )
+) +
+  geom_boxplot(
+    outlier.shape = 21,
+    outlier.size = 1
+  ) +
+  scale_x_discrete(
+    labels = x_labels,
+    drop = FALSE
+  ) +
+  scale_fill_manual(
+    values = group_colors,
+    breaks = group_order,
+    drop = FALSE
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      vjust = 0.5,
+      hjust = 1
+    ),
+    plot.margin = margin(
+      10,
+      10,
+      10,
+      20
+    )
+  ) +
+  labs(
+    x = "group",
+    y = "log2(Intensity)",
+    title = "Log2-transformed protein intensities",
+    fill = "group"
+  )
+```
+
+## Principal Component Analysis (PCA)
+
+Principal Component Analysis (PCA) is a very important dimension reduction technique. PCA works by identifying new axes, called principal components (PCs), that capture the most variability in the data. Instead of plotting hundreds or thousands of features, PCA reduces this to just a few new dimensions that explain the overall structure. We usually focus on the first two principal components, since they explain the largest amount of variation, but additional components can also be explored.
+
+To run PCA, we need a numerical matrix with no missing values. First we will remove proteins missing in half or more of the samples. This is an overall coverage filter for this exercise; it can remove proteins detected only in one condition. A real study may need a group-aware filter or a method designed for detection differences.
+
+```{r coverage-filter}
+row_na_threshold = 0.5
+keep_rows = rowMeans(is.na(prot)) < row_na_threshold
+coverage_summary = table(kept = keep_rows)
+coverage_summary
+prot = prot[keep_rows, , drop = FALSE]
+```
+
+For the visualization only, we will replace missing values with the minimum observed log2 intensity. This simple approach can create or exaggerate separation when missingness differs by group. We will retain the original missing values for statistical testing. Other imputation methods make different assumptions; this is a teaching shortcut, not a default recommendation for every dataset.
+
+`prcomp()` gives us the standard deviation of each principal component in `$sdev`. Square those values to get the variances. Divide each variance by the sum of all the component variances and multiply by 100 to get the percent variance explained by each component.
+
+```{r pca-input}
+min_value = min(as.matrix(prot), na.rm = TRUE)
+prot_imputed = as.matrix(prot)
+prot_imputed[is.na(prot_imputed)] = min_value
+
+# Remove constant rows because they cannot be divided by their SD.
+pca_keep = apply(prot_imputed, 1, sd) > 0
+prot_imputed = prot_imputed[pca_keep, , drop = FALSE]
+
+# prcomp expects samples in rows and features in columns.
+prot_for_pca = t(prot_imputed)
+pca_result = prcomp(prot_for_pca, center = TRUE, scale. = TRUE)
+pc_variance = pca_result$sdev^2
+pct_variance = 100 * pc_variance / sum(pc_variance)
+```
+
+Centering subtracts each protein's mean. Scaling divides by its standard deviation, putting proteins on comparable scales. This gives a low-variance protein as much starting weight as a high-variance protein, so it can also amplify noise. It is a choice we should check rather than an automatic improvement.
+
+Once PCA is complete, we will visualize the first two principal components in a scatter plot, colored by group using the values from meta$color.
+
+```{r}
+# Extract PCA scores
+pca_scores = pca_result$x
+
+# Plot the first two principal components using base R
+plot(
+  pca_scores[, 1], pca_scores[, 2],
+  col = meta$color,
+  pch = 16,
+  xlab = paste0("PC1 (", round(pct_variance[1], 1), "%)"),
+  ylab = paste0("PC2 (", round(pct_variance[2], 1), "%)"),
+  main = "PCA: PC1 vs PC2"
+)
+
+# Add a legend to explain the colors
+legend(
+  "topright",
+  legend = unique(meta$group),
+  col = unique(meta$color),
+  pch = 16,
+  cex = 0.8
+)
+
+```
+
+What a nice dataset! We can see distinct groups in the PCA. This is useful evidence of structure, but it does not prove that every difference is biological or predict how many proteins will pass an FDR cutoff. We should also check batch, run order, and missingness. Separation that follows genotype could still reflect a batch effect if every WT sample was run separately from every KO sample.
+
+## Heatmap
+
+Heatmaps are another useful way to visualize our data while performing hierarchical clustering. A heatmap shows the intensity of many features, such as proteins, across all samples, using color to represent relative abundance. Clustering is applied to both rows (features) and columns (samples) to group together those with similar expression patterns.
+
+We have already filtered proteins with poor coverage and made a complete matrix for visualization. We will use that same matrix for the heatmap so that the clustering does not fail because of missing values. Statistical testing later will use the unimputed data in prot.
+
+We typically do not include all proteins in the heatmap. In any omics experiment, many features will not vary much across samples. Including these adds noise and makes patterns harder to see. Instead, we focus on a subset of the most variable features. One common approach is to use standard deviation to identify the most variable proteins. Here, we will select the top 1000 proteins based on their standard deviation. 
+
+To do this, we use the apply() function, which applies a function to either the rows or columns of a data frame. By setting MARGIN = 1, we tell R to apply the sd() (standard deviation) function to each row (i.e., each protein). Here we use the complete visualization matrix. If we calculated standard deviations on the original data instead, we would need na.rm = TRUE to ignore NAs.
+
+```{r}
+# Select top 1000 proteins by standard deviation
+protein_sds = apply(prot_imputed, MARGIN = 1, sd)
+top_proteins = head(names(sort(protein_sds, decreasing = TRUE)), 1000)
+top_prot = prot_imputed[top_proteins, , drop = FALSE]
+```
+
+
+Before plotting, we need to center and scale the data by performing a z-score transformation on each row. This step is important. Just like in PCA, large differences in raw intensity values can overwhelm the clustering and lead to misleading patterns. Without standardization, proteins with higher average abundance will cluster together not because they behave similarly across samples, but simply because their overall values are larger.
+
+
+```{r}
+# Z-score normalization (row-wise)
+z_top_prot = t(scale(t(top_prot)))
+```
+
+After scaling, the heatmap will better reflect biological patterns of change rather than differences in measurement scale. Clusters of samples and features may emerge that reflect group structure or co-regulated proteins. The heatmap can also help detect outliers or technical artifacts.
+
+To create our heatmap, we will use the ComplexHeatmap package. This package is part of Bioconductor (https://bioconductor.org), which is a specialized repository for bioinformatics tools in R. Unlike CRAN, which hosts general-purpose R packages, Bioconductor focuses on packages for analyzing genomic and other biological data. You install Bioconductor packages using the BiocManager package.
+
+You can do so with the following code. This block checks whether BiocManager is installed, installs it if needed, and then uses it to install ComplexHeatmap (https://www.bioconductor.org/packages/release/bioc/html/ComplexHeatmap.html). You can copy and paste this into your R console:
+
+```{r, eval = FALSE}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("ComplexHeatmap")
+```
+
+Once the package is installed, we can prepare our data. We will select the top 1,000 most variable proteins based on standard deviation, apply z-score scaling to center and standardize each row (protein), and color the columns (samples) by group/genotype/condition from meta. 
+
+```{r}
+# Load ComplexHeatmap
+library(ComplexHeatmap)
+
+# Group colors (already defined in meta)
+legend_groups = unique(meta[, c("group", "color")])
+group_colors_named = setNames(legend_groups$color, legend_groups$group)
+
+# Define pastel but distinct hex colors
+geno_colors = c(
+  # soft orange
+  "WT" = "#FDB462",
+  # pastel blue (not skyblue)
+  "KO" = "#80B1D3"
+)
+
+cond_colors = c(
+  # light mint green
+  "baseline" = "#CCEBC5",
+  # muted violet
+  "TP"       = "#BC80BD"
+)
+
+# Create column annotations
+column_annot = HeatmapAnnotation(
+  group = meta$group,
+  genotype = meta$genotype,
+  condition = meta$condition,
+  col = list(
+    group = group_colors_named,
+    genotype = geno_colors,
+    condition = cond_colors
+  )
+)
+
+# Draw heatmap
+Heatmap(
+  z_top_prot,
+  name = "Z-score",
+  top_annotation = column_annot,
+  show_column_names = FALSE,
+  show_row_names = FALSE,
+  cluster_rows = TRUE,
+  cluster_columns = TRUE
+)
+
+```
+
+## Questions
+
+1. Create a new data frame with just the top 25 most variable proteins (by standard deviation). Try drawing a heatmap using just this smaller set. 
+
+2. Try setting cluster_rows = FALSE or cluster_columns = FALSE in your heatmap to see what changes. 
+
+# Annotate data
+
+In proteomics datasets, protein identifiers often come as UniProt accessions such as `P12345`. Mapping them to gene symbols makes the plots easier to read and gives us identifiers for pathway analysis. For this dataset, we will use the supplied export from the [UniProt batch ID mapping tool](https://www.uniprot.org/id-mapping).
+
+Load in the ID mapping data and take a look:
+
+```{r}
+id_map = read.delim("data/idmapping_2026_07_16.tsv", header = TRUE)
+head(id_map)
+```
+
+We need to match the gene names to the UniProt identifiers using the match() function. To understand how it works, let’s look at a simple example.
+
+```{r}
+letters = c("a", "b", "c", "d")
+lookup = c("b", "d", "a", "c")
+match(letters, lookup)
+```
+
+This returns: 3 1 4 2 . It tells us that "a" is in position 3 of the lookup vector, "b" is in position 1, "c" is in position 4, and "d" is in position 2.
+
+Now let us apply `match()` to our protein data. `Entry` contains the UniProt accession, and `Gene.Names` can contain more than one name. For example, the export lists `Kmt5a Setd8` for one entry. We keep `Kmt5a Setd8` in `gene_names` so we can still see and look up `Setd8` if we come across that name later. We use the first name, `Kmt5a`, as our working gene symbol. The accession stays with the protein throughout the analysis.
+
+```{r protein-annotation}
+# Match by accession because several proteins can share a gene name.
+id_map_one = id_map[!duplicated(id_map$Entry), ]
+match_positions = match(rownames(prot), id_map_one$Entry)
+
+protein_annotation = data.frame(
+  uniprot = rownames(prot),
+  gene_names = id_map_one$Gene.Names[match_positions],
+  stringsAsFactors = FALSE
+)
+```
+
+We installed `stringr` with the plotting packages earlier. `str_squish()` removes extra spaces, and `word(..., 1)` takes the first word. If we have no gene name, we use the accession as the plot label.
+
+```{r protein-gene-symbols}
+library(stringr)
+word("Kmt5a Setd8", 1)
+
+clean_gene_names = str_squish(protein_annotation$gene_names)
+protein_annotation$gene_symbol = word(clean_gene_names, 1)
+protein_annotation$gene_symbol[protein_annotation$gene_symbol == ""] = NA
+protein_annotation$label = ifelse(
+  is.na(protein_annotation$gene_symbol),
+  protein_annotation$uniprot,
+  protein_annotation$gene_symbol
+)
+table(mapped = !is.na(protein_annotation$gene_symbol))
+head(protein_annotation)
+```
+
+For this exercise we use the first name in the supplied export. If an entry lists several names and you need to confirm which gene it refers to, look up the UniProt accession and check the gene name listed there.
+
+# Differential protein abundance
+
+## Hypothesis testing
+
+Now that we have looked at the data and added gene annotations, we can ask which proteins differ in abundance between conditions. We will use Welch’s two-sample t-test to compare the group means on the log2 scale. The p-value depends on the size of the difference, the spread of the measurements within each group, and the number of observations. We will look at the difference itself as well so we can describe how much the abundance changed.
+
+We will compare WT_baseline (group1) with WT_TP (group2). Positive fold change means higher abundance in group2. We will give the groups generic names so we can repeat the analysis by changing two lines. We assume these are independent biological replicates. If they were repeated measurements from the same animals, we would need a paired test or a model that includes animal ID.
+
+```{r choose-comparison}
+group1 = "WT_baseline"
+group2 = "WT_TP"
+group1_samples = subset(meta, group == group1)$expression_column
+group2_samples = subset(meta, group == group2)$expression_column
+stopifnot(length(group1_samples) >= 2, length(group2_samples) >= 2)
+
+# Only abundance columns go into calculations, even after we add annotations.
+comparison_matrix = as.matrix(prot[, c(group1_samples, group2_samples)])
+```
+
+## Plot and test two proteins by hand
+
+Let us start with two proteins from this dataset, Anxa2 and Atp2a2. We chose them because they show different patterns in this comparison. Use the UniProt accession to pick a row and the sample names to pick the columns. Each dot is one mouse, and both panels use the same y-axis limits. Before running a test, which protein would you expect to have the smaller p-value?
+
+```{r two-protein-values}
+anxa2_group1 = comparison_matrix["P07356", group1_samples]
+anxa2_group2 = comparison_matrix["P07356", group2_samples]
+atp2a2_group1 = comparison_matrix["O55143", group1_samples]
+atp2a2_group2 = comparison_matrix["O55143", group2_samples]
+anxa2_group1
+anxa2_group2
+```
+
+Now we have two vectors for each protein, one for each group. For the plots, put the values from both groups in one column and give each value its group label in another column.
+
+```{r two-protein-boxplots, fig.width=8, fig.height=4}
+plot_groups = rep(c(group1, group2),
+                  c(length(group1_samples), length(group2_samples)))
+plot_groups = factor(plot_groups, levels = c(group1, group2))
+anxa2_plot = data.frame(intensity = c(anxa2_group1, anxa2_group2), group = plot_groups)
+atp2a2_plot = data.frame(intensity = c(atp2a2_group1, atp2a2_group2), group = plot_groups)
+shared_limits = range(anxa2_plot$intensity, atp2a2_plot$intensity, na.rm = TRUE)
+
+par(mfrow = c(1, 2))
+# Spread the points horizontally so we can see measurements that are close together.
+set.seed(2026)
+boxplot(intensity ~ group, data = anxa2_plot, ylim = shared_limits,
+        outline = FALSE, xlab = "", ylab = "Log2 intensity", main = "Anxa2")
+stripchart(intensity ~ group, data = anxa2_plot, vertical = TRUE,
+           method = "jitter", add = TRUE, pch = 16, col = "steelblue")
+boxplot(intensity ~ group, data = atp2a2_plot, ylim = shared_limits,
+        outline = FALSE, xlab = "", ylab = "Log2 intensity", main = "Atp2a2")
+stripchart(intensity ~ group, data = atp2a2_plot, vertical = TRUE,
+           method = "jitter", add = TRUE, pch = 16, col = "steelblue")
+par(mfrow = c(1, 1))
+```
+
+Pass the `group2` vector to `t.test()` first so the confidence interval is for `group2 - group1`, the same direction we will use for the log2 fold change.
+
+```{r two-protein-t-tests}
+anxa2_test = t.test(anxa2_group2, anxa2_group1)
+atp2a2_test = t.test(atp2a2_group2, atp2a2_group1)
+anxa2_test
+atp2a2_test
+```
+
+For the WT comparison, Anxa2 is lower in WT_TP and has a small p-value. The Atp2a2 group means are much closer together, and its p-value is much larger. Find the means and the 95% confidence interval in each test output. Which interval includes zero?
+
+Use `$p.value` to pull out just the p-value. `p.value` is the name R gives it in the test result. In the full results table later, we name our column `pval`.
+
+```{r two-protein-p-values}
+anxa2_test$p.value
+atp2a2_test$p.value
+```
+
+These are the raw p-values. We will adjust for multiple testing once we have a p-value for every protein we can test.
+
+## Repeat the comparison for every protein
+
+Each row of `comparison_matrix` is a protein, so `apply()` with `1` repeats a calculation row by row. Let us start with the mean in each group and keep the results in a separate table.
+
+```{r group-means}
+protein_results = protein_annotation
+protein_results$group1_mean = apply(comparison_matrix[, group1_samples], 1, mean, na.rm = TRUE)
+protein_results$group2_mean = apply(comparison_matrix[, group2_samples], 1, mean, na.rm = TRUE)
+protein_results$n_group1 = rowSums(!is.na(comparison_matrix[, group1_samples]))
+protein_results$n_group2 = rowSums(!is.na(comparison_matrix[, group2_samples]))
+```
+
+Remember `log2(a / b) = log2(a) - log2(b)`? Our values are already on the log2 scale, so we subtract the group means directly. That difference gives the log2 ratio of the geometric mean intensities.
+
+```{r fold-change}
+protein_results$group2_group1_log2fc = protein_results$group2_mean - protein_results$group1_mean
+```
+
+Now we can repeat the same Welch t-test for every row. Welch’s test allows different variances in the two groups and needs at least two observed values per group. `tryCatch()` records `NA` if a test cannot run. We use the observed values here and skip missing intensities.
+
+```{r t-tests}
+protein_results$pval = apply(comparison_matrix, 1, function(x) {
+  x1 = x[group1_samples]
+  x2 = x[group2_samples]
+  x1 = x1[is.finite(x1)]
+  x2 = x2[is.finite(x2)]
+  tryCatch(t.test(x2, x1)$p.value, error = function(e) NA_real_)
+})
+table(testable = is.finite(protein_results$pval))
+
+# Look up the two examples in the full table and compare their raw p-values.
+subset(protein_results, uniprot %in% c("P07356", "O55143"),
+       select = c(uniprot, label, group2_group1_log2fc, pval))
+```
+
+Do the two raw p-values match the ones we calculated by hand? Now pick a third accession from `protein_results`. Use the same sample names to make a boxplot and run a t-test for that protein, then check the p-value against the table.
+
+Testing thousands of proteins creates many opportunities for false positives. We will use the Benjamini–Hochberg adjustment to account for the number of tests. False discovery rate (FDR) control refers to the expected proportion of false positives among the results we call significant across repeated experiments.
+
+```{r fdr}
+protein_results$padj = p.adjust(protein_results$pval, method = "BH")
+fdr_cutoff = 0.05
+fc_cutoff = log2(2)
+protein_results$differentially_expressed = with(protein_results,
+  is.finite(padj) & is.finite(group2_group1_log2fc) &
+    padj <= fdr_cutoff & abs(group2_group1_log2fc) >= fc_cutoff
+)
+table(protein_results$differentially_expressed)
+```
+
+These cutoffs are choices for this workshop. A fold change is an effect size, but its biological importance depends on the protein and experiment. For studies with covariates, paired samples, or many contrasts, consider a model-based workflow such as limma rather than repeatedly applying this simple test.
+
+## Volcano plot
+
+A volcano plot shows one point per protein. The x-axis gives the log2 fold change, so proteins higher in `group1` are on the left and proteins higher in `group2` are on the right. The y-axis gives `-log10()` of the adjusted p-value so the smallest p-values appear highest. For example, `-log10(0.01)` is 2 and `-log10(0.001)` is 3.
+
+### Set up the plotting table
+
+Start with the columns we need from `protein_results`. Keep rows with a finite fold change and a positive, finite adjusted p-value. This gives `log10()` a value it can turn into a plot coordinate.
+
+```{r volcano-table}
+volcano_df = data.frame(
+  log2fc = protein_results$group2_group1_log2fc,
+  padj = protein_results$padj,
+  name = protein_results$label,
+  uniprot = protein_results$uniprot
+)
+volcano_df = subset(volcano_df, is.finite(log2fc) & is.finite(padj) & padj > 0)
+volcano_df$neglog10padj = -log10(volcano_df$padj)
+head(volcano_df)
+```
+
+### Decide which points to color
+
+Give every row the label `Below cutoffs` to start. Then use `&` to find proteins that meet both cutoffs. A positive log2 fold change must reach `fc_cutoff` to count as higher in `group2`. A negative log2 fold change must reach `-fc_cutoff` or go farther left to count as higher in `group1`.
+
+```{r volcano-colors}
+passes_fdr = volcano_df$padj <= fdr_cutoff
+higher_group2 = passes_fdr & volcano_df$log2fc >= fc_cutoff
+higher_group1 = passes_fdr & volcano_df$log2fc <= -fc_cutoff
+
+volcano_df$direction = "Below cutoffs"
+volcano_df$direction[higher_group2] = "Higher in group2"
+volcano_df$direction[higher_group1] = "Higher in group1"
+table(volcano_df$direction)
+
+plot_colors = c("Higher in group2" = "red", "Higher in group1" = "blue",
+                "Below cutoffs" = "gray")
+volcano_df$color = plot_colors[volcano_df$direction]
+```
+
+### Choose a few proteins to label
+
+`order()` gives the positions that would put values in order. For example, `order(c(3, 1, 2))` returns `2, 3, 1`. Use those positions inside the row brackets to rearrange a table. Here we sort the two groups of hits separately so `head()` can take up to five proteins from each end of the plot. `rbind()` puts those rows into one label table.
+
+```{r volcano-labels}
+up_df = subset(volcano_df, direction == "Higher in group2")
+down_df = subset(volcano_df, direction == "Higher in group1")
+up_df = up_df[order(up_df$log2fc, decreasing = TRUE), ]
+down_df = down_df[order(down_df$log2fc), ]
+label_df = rbind(head(up_df, 5), head(down_df, 5))
+```
+
+Now draw the points. `abline()` adds the cutoff lines, and `text()` places names beside the proteins we put in `label_df`.
+
+```{r volcano-base}
+par(mar = c(5, 4, 4, 2))
+plot(volcano_df$log2fc, volcano_df$neglog10padj,
+     ylim = c(0, 1.08 * max(volcano_df$neglog10padj, -log10(fdr_cutoff))),
+     col = adjustcolor(volcano_df$color, alpha.f = 0.7), pch = 16,
+     xlab = paste0("Log2 fold change (", group2, " vs ", group1, ")"),
+     ylab = "-log10 adjusted p-value", main = "Volcano plot")
+abline(h = -log10(fdr_cutoff), lty = 2)
+abline(v = c(-fc_cutoff, fc_cutoff), lty = 2)
+text(label_df$log2fc, label_df$neglog10padj, labels = label_df$name, pos = 3, cex = 0.7)
+legend("topright", legend = names(plot_colors), col = plot_colors, pch = 16, cex = 0.8)
+```
+
+## Volcano plot with ggplot2
+
+The ggrepel package helps keep the labels from overlapping. We will reuse the same table and cutoffs so both plots show the same analysis. We will also let the data determine the axes, rather than hide points with fixed limits.
+
+```{r, eval = FALSE}
+install.packages("ggrepel")
+```
+
+```{r volcano-ggplot}
+library(ggrepel)
+ggplot(volcano_df, aes(x = log2fc, y = neglog10padj, color = direction)) +
+  geom_point(alpha = 0.6) +
+  geom_vline(xintercept = c(-fc_cutoff, fc_cutoff), linetype = "dashed") +
+  geom_hline(yintercept = -log10(fdr_cutoff), linetype = "dashed") +
+  geom_text_repel(data = label_df, aes(label = name), color = "black",
+                  size = 3, max.overlaps = Inf, show.legend = FALSE, seed = 1) +
+  scale_color_manual(values = plot_colors) +
+  labs(title = "Volcano plot", x = paste0("Log2 fold change (", group2, " vs ", group1, ")"),
+       y = "-log10 adjusted p-value", color = "Direction") +
+  theme_minimal()
+```
+
+## Pathway enrichment analysis
+
+We have a list of proteins that pass both cutoffs. Are some KEGG pathways represented in that list more often than we would expect? Enrichr uses the gene symbols to check. We will use the mouse library and start with the proteins higher in `group2`.
+
+```{r pathway-genes}
+higher_proteins = subset(protein_results,
+  differentially_expressed & group2_group1_log2fc > 0 & !is.na(gene_symbol))
+higher_genes = unique(higher_proteins$gene_symbol)
+head(higher_genes)
+length(higher_genes)
+```
+
+`unique()` gives us one entry per gene. Enrichr sends the gene symbols to its web service, so the live call needs an internet connection. Install the package once if you need it.
+
+```{r install-enrichr, eval=FALSE}
+install.packages("enrichR")
+```
+
+By default, knitting uses the Enrichr table saved from the original WT workshop. It was generated with the earlier gene mapping, so the numbers can differ from a fresh run. To use today's list, run the Enrichr chunk below by hand and then run the table and plot chunks. To include a fresh run when knitting, set `run_enrichr: true` at the top of this file.
+
+```{r saved-enrichr-example, include=FALSE, eval=!params$run_enrichr}
+kegg_results = read.delim("data/kegg_higher_WT_TP_2026-07-16.txt")
+kegg_plot_title = "Saved WT KEGG example"
+```
+
+```{r run-enrichr, eval=params$run_enrichr}
+library(enrichR)
+enrichment = enrichr(higher_genes, "KEGG_2019_Mouse")
+kegg_results = enrichment[["KEGG_2019_Mouse"]]
+kegg_plot_title = "Mouse KEGG pathways (live run)"
+```
+
+We asked for one library. The line with the double brackets pulls that library's table out of the results. Look at `Term` for the pathway name, `Adjusted.P.value` for the adjusted p-value, and `Overlap` for how many of our genes hit that pathway. `Genes` gives the names of the matching genes.
+
+```{r inspect-enrichr}
+head(kegg_results[, c("Term", "Overlap", "Adjusted.P.value")])
+kegg_results$Genes[1]
+```
+
+### Plot the top KEGG pathways
+
+Sort the table by adjusted p-value and use `head()` to take the first ten rows. Just as in the volcano plot, smaller adjusted p-values become larger values after `-log10()`. `rev()` puts the smallest p-value at the top of the horizontal bar plot. The dashed line marks an adjusted p-value of 0.05.
+
+```{r pathway-plot, fig.width=8, fig.height=5}
+kegg_sorted = kegg_results[order(kegg_results$Adjusted.P.value), ]
+top_kegg = head(kegg_sorted, 10)
+bar_heights = -log10(top_kegg$Adjusted.P.value)
+pathway_names = str_trunc(top_kegg$Term, 40)
+
+old_margins = par(mar = c(5, 17, 4, 2))
+barplot(rev(bar_heights), names.arg = rev(pathway_names), horiz = TRUE,
+        col = "steelblue", las = 1, cex.names = 0.75,
+        xlab = "-log10 adjusted p-value", main = kegg_plot_title)
+abline(v = -log10(0.05), lty = 2)
+par(old_margins)
+```
+
+Which bars cross the line? Pick one and read its matching genes in the results table. Enrichment tells us that genes from a pathway appear often in our list. To interpret the finding, look at which genes contributed and what the experiment measured.
+
+## Save the results
+
+```{r save-day1}
+write.table(protein_results, "work/day1_protein_differential_abundance.tsv",
+            sep = "\t", quote = FALSE, row.names = FALSE)
+writeLines(capture.output(sessionInfo()), "work/day1_sessionInfo.txt")
+```
+
+After a live Enrichr run, use this chunk to save the new pathway results.
+
+```{r save-enrichr-results, eval=params$run_enrichr}
+write.table(kegg_results, "work/day1_enrichr_kegg.tsv",
+            sep = "\t", quote = FALSE, row.names = FALSE)
+```
+
+## Questions
+
+1. How many proteins pass both cutoffs? How many could not be tested?
+2. What happens if you change fc_cutoff from log2(2) to log2(1.5)? Keep the FDR threshold fixed and rerun the downstream chunks.
+3. Try making a histogram of the finite log2 fold changes with hist(). Does the distribution look symmetric?
+4. Among proteins higher in group2, which has the 42nd-smallest adjusted p-value? If there are fewer than 42, how would you avoid selecting a nonexistent row?
+5. For a live Enrichr run, make a gene list from proteins that pass both cutoffs and are higher in `group1`. Repeat the enrichment and compare the pathways from the two directions.
+6. Pick one pathway in the bar plot. Use the `Genes` column for that pathway to find the genes that contributed.
+7. Change `group1` and `group2` to compare `KO_baseline` with `KO_TP`. Rerun from `choose-comparison` through the volcano plot. To see which pathways come up for KO, submit the new KO gene list to Enrichr. The saved example is for WT. Does a difference in significance between WT and KO prove a genotype-by-treatment interaction? (Hint: that needs an interaction test.)
+
+# Knit to HTML or PDF
+
+This R Markdown file can make both an HTML report and a PDF. Use the menu next to **Knit** in RStudio and choose **Knit to HTML** or **Knit to PDF**. To make a PDF, you need a LaTeX installation. TinyTeX is one option.
+
+If you need LaTeX, run these two commands once in the R console. Restart RStudio when installation finishes, then choose **Knit to PDF**. [TinyTeX documentation](https://yihui.org/tinytex/).
+
+```{r install-tinytex, eval=FALSE}
+install.packages("tinytex")
+tinytex::install_tinytex()
+```
+
+To make both reports at once, run this in the console with `mass_spec_multi-omics_2026.Rproj` open. [R Markdown render documentation](https://rmarkdown.rstudio.com/docs/reference/render.html).
+
+```{r render-both-formats, eval=FALSE}
+rmarkdown::render("scripts/Day01_proteomics.Rmd", output_format = "all")
+```
+
+# Further reading
+
+I highly recommend *Practical Statistics for Data Scientists* for a deeper look at the ideas we used today, including exploratory plots, sampling, and significance testing. It has worked examples in R and Python. It is a paid book from O’Reilly. [Practical Statistics for Data Scientists, 2nd edition](https://www.oreilly.com/library/view/practical-statistics-for/9781492072935/).
+
+Ever feel lost about which statistical test to use? John McDonald’s free handbook walks through how to choose a test and interpret it using examples from biology. The separate R companion shows how to run many of those examples in R. [Handbook of Biological Statistics](https://www.biostathandbook.com/), [Choosing a statistical test](https://www.biostathandbook.com/testchoice.html), [R Companion](https://rcompanion.org/rcompanion/).
+
+If you would like to continue building your skills in R and data analysis, a great place to start is Roger D. Peng’s open-access (free) book *R Programming for Data Science*: https://bookdown.org/rdpeng/rprogdatascience/. It introduces many foundational ideas in R programming and data science in a practical and approachable way.
+
+For topics more specific to genomics and bioinformatics workflows, *Computational Genomics with R* by Altuna Akalin is another excellent resource: https://compgenomr.github.io/book/. It covers a range of common bioinformatics tasks, including working with sequencing data, visualization, and downstream analysis using R and Bioconductor.
+
+Looking for inspiration on how to visualize your data in R? Explore the R Graph Gallery: https://r-graph-gallery.com
+
+Want to see some of these concepts applied in cutting-edge proteogenomics research? Take a look at recent CPTAC papers, such as this one: https://pubmed.ncbi.nlm.nih.gov/38359819/
+
+Although this workshop focuses on proteomics, many of the same principles and tools apply across bioinformatics domains. Bioinformatics is, at its core, biological data science. Most well-written data science resources are directly relevant and can help you continue to grow your skills.
+
+# How to get help
+
+Many common questions and answers: https://stackoverflow.com (top Google search hits for error messages and problems with R usually have some links to here).
+
+Amazing for debugging code and troubleshooting error messages https://chatgpt.com.
+
+Need to ask someone for help? Make a SSCCE https://sscce.org.
+
+
+Package/library references: [ComplexHeatmap](https://bioconductor.org/packages/ComplexHeatmap/), [Enrichr](https://maayanlab.cloud/Enrichr/), [limma user guide](https://bioconductor.org/packages/limma/).

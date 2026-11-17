@@ -1,0 +1,1247 @@
+---
+title: "Multi-omics Data Analysis Workshop: Day 2"
+author: Paul Stewart
+output:
+  html_document:
+    toc: true
+    toc_float: true
+  pdf_document:
+    toc: true
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.width = 8, fig.height = 6, message = FALSE)
+
+# Start the workshop with the same random seed each time.
+workshop_seed = 2026
+set.seed(workshop_seed)
+
+# Use the project folder for file paths, as on Day 1.
+library(here)
+knitr::opts_knit$set(root.dir = here::here())
+work_folder = here::here("work")
+dir.create(work_folder, showWarnings = FALSE)
+```
+
+# Introduction
+
+Yesterday we worked with a single omics table. Today we will work with two tables from the same samples, one with gene expression and one with targeted lipid abundance. We will use many of the same R functions, including `head()`, `subset()`, `plot()`, and `prcomp()`.
+
+We will work through two questions:
+
+1. Which genes behave together and how do they relate to the lipids?
+2. Which sample groups emerge from both types of measurements, and what distinguishes them?
+
+For the first question, we will perform horizontal integration with gene expression and lipid data. We will use Weighted Gene Co-expression Network Analysis (WGCNA) to find groups of genes that behave similarly, then relate those groups to individual fatty acids. Langfelder and Horvath provide R scripts, example data, and tutorials at <https://edo98811.github.io/WGCNA_official_documentation/>. Their paper is at <https://doi.org/10.1186/1471-2105-9-559>.
+
+For the second question, we will perform vertical integration with the same two datasets. We will use Similarity Network Fusion (SNF) to combine information from the gene and lipid measurements, cluster the mice, and look at what differs between clusters. The SNF paper is at <https://doi.org/10.1038/nmeth.2810>. The SNFtool manual has a worked example at <https://cran.r-project.org/web/packages/SNFtool/SNFtool.pdf>.
+
+## Set up R
+
+Open `mass_spec_multi-omics_2026.Rproj` in RStudio, then open `scripts/Day02_SNF.Rmd`. Once the packages are installed, run the `setup` chunk first and work through the chunks from top to bottom. The setup chunk sets the random seed and uses `here()` as we did on Day 1, so the results go in the project's `work/` folder. The dataset comes with the mixOmics R package.
+
+The following installation chunk has eval = FALSE so packages are not installed each time we knit. Run it once before the workshop. WGCNA has several dependencies, so leave time to finish the installation before class.
+
+```{r install-packages, eval=FALSE}
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+install.packages(c("rmarkdown", "knitr", "here", "SNFtool", "BiocManager"))
+BiocManager::install(c("mixOmics", "WGCNA", "ComplexHeatmap"), ask = FALSE, update = FALSE)
+# For the live pathway lookup, also run install.packages("enrichR") once.
+```
+
+```{r load-packages, warning=FALSE}
+library(WGCNA)
+library(ComplexHeatmap)
+
+# This option tells WGCNA to use one thread for its calculations.
+# Multiple threads can split up the work, but this dataset is small.
+disableWGCNAThreads()
+```
+
+# Read in and view data
+
+## Today's experiment
+
+We will work with the Nutrimouse dataset from Martin and colleagues' study in Hepatology. <https://doi.org/10.1002/hep.21510>. The study asked how dietary fats affect the liver in wild-type and PPAR-alpha-deficient mice. The mice received one of five diets based on different oils (reference, coconut, fish, linseed, or sunflower), and the package includes 40 mice (four per genotype and diet combination). The gene table has 120 measurements from a targeted expression array, and the lipid table has 21 fatty acids measured by gas chromatography. 
+
+Nutrimouse comes with the mixOmics package, so there is no external file to open with `read.delim()`. We can load example datasets that come with R packages using `data()`.
+
+```{r load-nutrimouse}
+data("nutrimouse", package = "mixOmics")
+```
+
+Let's take a look at the data like we did yesterday. Note that nutrimouse is a list, an R object that can contain multiple objects.
+
+```{r nutrimouse-geno-diet-table}
+table(nutrimouse$genotype, nutrimouse$diet)
+```
+
+
+```{r nutrimouse-gene}
+names(nutrimouse)
+dim(nutrimouse$gene)
+nutrimouse$gene[1:5, 1:5]
+```
+
+The gene table uses the labels that came with Nutrimouse, so you will see names like `ACAT1`. Official mouse gene symbols usually start with a capital letter followed by lowercase letters. We will practice looking up mouse gene identifiers at the end. Mouse Genome Informatics naming guidelines <https://www.informatics.jax.org/mgihome/nomen/2021_gene.shtml#ns2.3.1>.
+
+```{r nutrimouse-lipid}
+dim(nutrimouse$lipid)
+nutrimouse$lipid[1:5, 1:5]
+```
+
+`rowSums()` adds up the 21 fatty-acid percentages for each mouse. Use `range()` to see the smallest and largest totals.
+
+```{r lipid-percent-totals}
+range(rowSums(nutrimouse$lipid))
+```
+
+The totals are close to 100 because the values are percentages. 
+
+```{r lipid-column-names}
+colnames(nutrimouse$lipid)
+```
+
+The lipid names indicate the number of carbons, number of double bonds, and the position of the first double bond counting from the methyl end (n-3, n-6, or n-9). For example, C18.2n.6 has 18 carbons, 2 double bonds, and belongs to the omega-6 family.
+
+In `nutrimouse$gene` and `nutrimouse$lipid`, samples are in rows and features are in columns. To follow the convention from yesterday, we will transpose them so that samples are columns and features (genes or lipids) are rows.
+
+```{r abundance-tables}
+gene = t(nutrimouse$gene)
+lipid = t(nutrimouse$lipid)
+dim(gene)
+dim(lipid)
+```
+
+After `t()`, we should see 120 rows and 40 columns for genes, and 21 rows and 40 columns for lipids. In both tables the 40 columns are the mice.
+
+## Make the metadata table
+
+Nutrimouse gives the two assays in matched order, so sample `1` in the gene table and sample `1` in the lipid table refer to the same mouse. Let us dress up the numbers a little. We will use `Mouse_1` for that mouse in both assays and in the metadata.
+
+```{r sample-metadata}
+meta = data.frame(
+  sample_id = paste0("Mouse_", rownames(nutrimouse$gene)),
+  genotype = as.character(nutrimouse$genotype),
+  diet = as.character(nutrimouse$diet)
+)
+head(meta)
+
+# Build the names from the sample numbers in each assay.
+colnames(gene) = paste0("Mouse_", colnames(gene))
+colnames(lipid) = paste0("Mouse_", colnames(lipid))
+head(colnames(gene))
+head(colnames(lipid))
+```
+
+# Match the samples
+
+First use `%in%` to ask whether every ID in the metadata is present as a column. Note that this works even when the columns are in a different order.
+
+```{r check-membership}
+all(meta$sample_id %in% colnames(gene))
+all(meta$sample_id %in% colnames(lipid))
+```
+
+Now compare the names one position at a time with `==`. `all()` gives us one `TRUE` if every comparison is true. We have 40 columns in both tables and 40 rows in the metadata, so we can compare their names in order.
+
+```{r check-order}
+all(meta$sample_id == colnames(gene))
+all(meta$sample_id == colnames(lipid))
+```
+
+Both checks return `TRUE` for Nutrimouse. The columns already match the metadata order, so we can use `gene` and `lipid` as they are. If all the IDs are present but the order check returns `FALSE`, use the metadata IDs to reorder the columns. For example, `lipid[, meta$sample_id]` selects the lipid columns in metadata order. You will try this in the questions after PCA.
+
+# Check each dataset
+
+We will check missing values and make a PCA for each layer before combining them. This helps us understand what each dataset contributes.
+
+```{r missing-values}
+sum(is.na(gene))
+sum(is.na(lipid))
+```
+
+Both datasets are complete. We will transpose them back to samples in rows for `prcomp()` and WGCNA. We will use these same sample rows for the rest of the workshop.
+
+```{r samples-in-rows}
+gene_samples = t(gene)
+lipid_samples = t(lipid)
+all(rownames(gene_samples) == meta$sample_id)
+all(rownames(lipid_samples) == meta$sample_id)
+```
+
+Today we will use the gene expression values and fatty-acid percentages as supplied. Each lipid value is that fatty acid's share of the measured total for one mouse. The table includes some values reported as zero, and we will keep them as zero.
+
+```{r sample-colors-and-shapes}
+genotype_colors = c(wt = "darkorange2", ppar = "dodgerblue3")
+genotype_labels = c("WT", "PPAR-alpha deficient")
+meta$color = genotype_colors[meta$genotype]
+
+# Use a different point shape for each diet.
+diet_shapes = c(ref = 16, coc = 17, fish = 15, lin = 18, sun = 8)
+diet_labels = c("Reference", "Coconut", "Fish oil", "Linseed", "Sunflower")
+sample_diet_shapes = diet_shapes[meta$diet]
+```
+
+## Review PCA
+
+Recall that PCA summarizes variation across many features using a few new axes. We will center and scale each feature, just as we did yesterday. This gives the features comparable starting scales. `prcomp()` returns each component's standard deviation in `$sdev`. We square those values to get variances, divide each by the total variance, and multiply by 100 to get the percent variance explained. We do this separately for genes and lipids.
+
+Each point is one mouse. Orange and blue show genotype, and the shape shows diet in both plots. `par(mfrow = c(1, 2))` puts the plots side by side in one row and two columns.
+
+```{r separate-pcas, fig.width=9, fig.height=5.5}
+gene_pca = prcomp(gene_samples, center = TRUE, scale. = TRUE)
+lipid_pca = prcomp(lipid_samples, center = TRUE, scale. = TRUE)
+
+gene_pc_variance = gene_pca$sdev^2
+lipid_pc_variance = lipid_pca$sdev^2
+gene_pct_variance = 100 * gene_pc_variance / sum(gene_pc_variance)
+lipid_pct_variance = 100 * lipid_pc_variance / sum(lipid_pc_variance)
+
+old_plot_settings = par(mfrow = c(1, 2))
+plot(gene_pca$x[, 1], gene_pca$x[, 2], col = meta$color, pch = sample_diet_shapes,
+     xlab = paste0("PC1 (", round(gene_pct_variance[1], 1), "%)"),
+     ylab = paste0("PC2 (", round(gene_pct_variance[2], 1), "%)"),
+     main = "Gene expression")
+legend("right", legend = genotype_labels,
+       col = genotype_colors, pch = 15, cex = 0.7)
+
+plot(lipid_pca$x[, 1], lipid_pca$x[, 2], col = meta$color, pch = sample_diet_shapes,
+     xlab = paste0("PC1 (", round(lipid_pct_variance[1], 1), "%)"),
+     ylab = paste0("PC2 (", round(lipid_pct_variance[2], 1), "%)"),
+     main = "Lipids")
+legend("bottomright", title = "Diet", legend = diet_labels,
+       pch = diet_shapes, cex = 0.75)
+par(old_plot_settings)
+```
+
+### Questions
+
+`sample()` picks values at random from a vector. Use `size = 1` to pick one value. Try running this a few times.
+
+```{r sample-example}
+sample(c("cat", "dog", "fish"), size = 1)
+```
+
+1. Make a copy of `meta` called `practice_meta`. Pick a row with `row_to_change = sample(1:nrow(practice_meta), size = 1)` and set `practice_meta$sample_id[row_to_change] = "Mouse_99"`. Check the practice IDs against `colnames(lipid)` with `%in%`. Which row comes back `FALSE`? Check it against `row_to_change`.
+2. Reverse the lipid columns with `lipid_reversed = lipid[, rev(colnames(lipid))]`. Use `%in%` and `all()` to check that all the metadata IDs are present. Now use `all(a == b)`, replacing `a` with the metadata IDs and `b` with the reversed column names. Which check returns `TRUE`? What does this tell you about how to check for matching samples? Use the metadata to put the columns back in order and run both checks again.
+3. Use `subset()` to make metadata for just the wild-type mice. Use its `sample_id` column to select those mice from `gene`.
+4. What is the most noticeable pattern in each PCA? Are the patterns consistent across the two assays? Pick one genotype or diet to compare across the plots.
+5. Which PCA captures more variation in PC1 and PC2 together? Add the two percentages in each plot to check.
+6. Use `subset()` to get the IDs of mice on the coconut diet (`coc`). Use these IDs to select rows from `lipid_pca$x` and plot PC1 against PC2. How many mice did you plot? Find the same points in the full lipid PCA.
+
+# Horizontal integration with WGCNA
+
+## Group genes that behave similarly
+
+WGCNA starts by asking which genes tend to go up and down together across the mice. It uses correlations to build a network of gene connections, then groups genes with similar connections into modules. Two genes that connect strongly to many of the same genes can end up in the same module.
+
+Since the modules come from the expression data, this is a useful approach when we are studying biology that is not captured by pathway databases. Once we know which genes belong to a module, we can use pathway analysis to see what biological processes those genes might capture.
+
+First, use WGCNA's `goodSamplesGenes()` to check for genes or mice with too many missing measurements and genes with essentially no variation. It checks the numbers in the table. Questions about gene symbols come up when we look up annotations. The `allOK` result should be `TRUE` here.
+
+```{r wgcna-check}
+gene_check = WGCNA::goodSamplesGenes(gene_samples, verbose = 0)
+gene_check$allOK
+```
+
+## Look at the gene correlations
+
+R spells this function `cor()` with one `r`. Give it two vectors and you get one correlation. Give it the gene table with mice in rows and genes in columns, and you get a correlation for every pair of gene columns. Look for the first correlation again in row 1, column 2 of the matrix.
+
+```{r gene-correlations}
+cor(gene_samples[, 1], gene_samples[, 2])
+gene_cor = cor(gene_samples)
+dim(gene_cor)
+round(gene_cor[1:5, 1:5], 2)
+```
+
+Each gene is a node in the network. With 120 genes we have 120 nodes and 7,140 possible connections between distinct genes. Each pair appears twice in the 120 by 120 matrix, once above and once below the diagonal. The diagonal is each gene's correlation with itself.
+
+Correlations are a starting point for many network analyses. To make the strongest connections easier to see, WGCNA gives each pair a weight from 0 to 1 and then raises that number to a power. As we increase the power, smaller weights drop toward zero faster. We call this soft thresholding because we are shrinking the weights gradually.
+
+We will use a signed network. Here signed means the direction of the original correlation matters. We convert each correlation `r` to `(1 + r) / 2`, then raise that number to the power. A correlation of 0.9 starts at 0.95 and a correlation of −0.9 starts at 0.05. Raising the original correlations directly to an even power like 20 would give both pairs the same weight.
+
+## Choose a soft-thresholding power
+
+`pickSoftThreshold()` tries several powers. Its automatic estimate returns the first power that passes the requested fit cutoff, or `NA` if none does. We will use the 0.90 cutoff shown in Langfelder and Horvath's worked example and focus on reading the two plots today. If you want to work through the plotting code later, compare the `plot-wgcna-power` chunk below with the tutorial. <https://edo98811.github.io/WGCNA_official_documentation/FemaleLiver-02-networkConstr-man.pdf>
+
+```{r check-wgcna-power, results='hide'}
+candidate_powers = c(1:10, seq(12, 30, by = 2))
+fit_cutoff = 0.90
+power_check = pickSoftThreshold(gene_samples, powerVector = candidate_powers,
+                                RsquaredCut = fit_cutoff, networkType = "signed",
+                                verbose = 0)
+```
+
+```{r automatic-wgcna-power}
+power_check$powerEstimate
+```
+
+We will mark power 20 on the plots so we can see how it compares with the other choices.
+
+```{r choose-workshop-power}
+soft_power = 20
+```
+
+```{r plot-wgcna-power, fig.width=9, fig.height=4.8}
+power_results = power_check$fitIndices[, c("Power", "SFT.R.sq", "slope", "mean.k.")]
+# Give a positive score only when highly connected genes are less common.
+signed_fit = -sign(power_results$slope) * power_results$SFT.R.sq
+chosen_fit = signed_fit[power_results$Power == soft_power]
+
+old_plot_settings = par(mfrow = c(1, 2))
+plot(power_results$Power, signed_fit, type = "n", ylim = c(-1, 1.04),
+     xlab = "Soft-thresholding power", ylab = "Scale-free topology fit (signed R-squared)",
+     main = "Scale independence")
+abline(h = fit_cutoff, col = "red", lty = 2)
+abline(v = soft_power, col = "steelblue4", lty = 3)
+power_labels = ifelse(power_results$Power == soft_power, "", power_results$Power)
+text(power_results$Power, signed_fit, labels = power_labels, col = "firebrick", cex = 0.8)
+points(soft_power, chosen_fit, col = "steelblue4", pch = 16, cex = 0.65)
+text(soft_power, chosen_fit, labels = paste0(soft_power, " (", round(chosen_fit, 3), ")"),
+     pos = 3, col = "steelblue4", cex = 0.8)
+
+plot(power_results$Power, power_results$mean.k., type = "n",
+     xlab = "Soft-thresholding power", ylab = "Mean connectivity",
+     main = "Mean connectivity")
+abline(v = soft_power, col = "steelblue4", lty = 3)
+text(power_results$Power, power_results$mean.k., labels = power_results$Power,
+     col = "firebrick", cex = 0.8)
+par(old_plot_settings)
+```
+
+The left plot asks whether most genes have weak or few connections while a few genes have strong connections to many others. Each number labels a power. Our automatic estimate is `NA` at the dashed red line of 0.90. At the function's default cutoff of 0.85, it would return 1. The fit at power 1 is for a trend in the opposite direction, which is why it appears below zero in the plot. We will use power 20. It has the highest signed fit among the powers we tried, about 0.895, and the dotted blue line marks it in both plots.
+
+The right plot shows mean connectivity. For each gene, add up its weights to all the other genes, then average those sums across genes. This tells us how much connection strength is left. It drops from about 5.66 at power 12 to 1.69 at power 20. That's a low total for a gene with 119 possible partners, so we expect most individual weights to be small. A reasonable connectivity depends on the number of genes and how strongly they correlate.
+
+### See what the power does to gene connections
+
+Let's look at the original correlations on the left and the connection weights that go into WGCNA on the right. Both plots use the same gene order. In the first plot you can see both positive and negative correlations. In the second plot, the strongest positive correlations are the connections that stand out. For example, a starting weight of 0.80 becomes about 0.01, while 0.95 becomes about 0.36.
+
+```{r wgcna-before-after-power, fig.width=9, fig.height=4.6}
+gene_connection_weights = ((1 + gene_cor) / 2)^soft_power
+cor_colors = circlize::colorRamp2(c(-1, 0, 1), c("blue", "white", "red"))
+weight_colors = circlize::colorRamp2(c(0, 1), c("white", "navy"))
+
+Heatmap(gene_cor, name = "Correlation", col = cor_colors,
+        column_title = "Gene correlations",
+        cluster_rows = FALSE, cluster_columns = FALSE,
+        show_row_names = FALSE, show_column_names = FALSE) +
+  Heatmap(gene_connection_weights, name = "Weight", col = weight_colors,
+          column_title = paste("Connection weights at power", soft_power),
+          cluster_rows = FALSE, cluster_columns = FALSE,
+          show_row_names = FALSE, show_column_names = FALSE)
+```
+
+The diagonal is dark in both plots because each gene matches itself. Look at the lighter squares away from the diagonal to see how much the weaker connections shrank.
+
+## Find the modules
+
+This is the main chunk that creates the modules. We give `blockwiseModules()` the gene table with mice in rows and then set the following options.
+
+- `power = soft_power` uses the power we chose above, 20. The function's default is 6.
+- `networkType = "signed"` gives more weight to genes that move in the same direction. The default network is unsigned, which also gives strong negative correlations large weights.
+- `TOMType = "signed"` keeps the default method for comparing genes by their shared connections. TOM stands for topological overlap, a measure of how similar those connections are.
+- `minModuleSize = 10` lowers the minimum size of the initial groups from 20 to 10 genes for this small panel.
+- `mergeCutHeight = 0.25` raises the cutoff from 0.15 so modules with similar expression patterns can merge more readily.
+- `randomSeed = workshop_seed` makes the function's random steps repeatable. `nThreads = 1` uses one thread, and `verbose = 0` keeps the progress output short.
+
+```{r find-modules}
+gene_network = blockwiseModules(
+  gene_samples,
+  power = soft_power,
+  networkType = "signed",
+  TOMType = "signed",
+  minModuleSize = 10,
+  mergeCutHeight = 0.25,
+  randomSeed = workshop_seed,
+  nThreads = 1,
+  verbose = 0
+)
+```
+
+These are worked-example settings for this small gene panel. For another dataset, check preprocessing, sample quality, and parameter choices using the WGCNA tutorials at <https://edo98811.github.io/WGCNA_official_documentation/>.
+
+`gene_network` is a list, like `nutrimouse`. Use `names()` to see what WGCNA returned. We will use `$colors` for the module labels and `$MEs` for the module summaries.
+
+```{r inspect-gene-network}
+names(gene_network)
+```
+
+## Which genes are in each module?
+
+WGCNA uses color names because the groups are defined by the expression data. Here we have three modules, blue, brown, and turquoise. Grey collects the genes that were left unassigned.
+
+```{r module-membership}
+module_membership = data.frame(
+  gene = colnames(gene_samples),
+  module = gene_network$colors
+)
+table(module_membership$module)
+head(module_membership)
+```
+
+We can use subset() to look at the genes in one module. Let us start with the blue module.
+
+```{r blue-module-genes}
+blue_genes = subset(module_membership, module == "blue")
+blue_genes
+```
+
+## Summarize each module
+
+WGCNA runs principal component analysis on the expression of the genes in each module. It takes the first principal component, PC1, as a representative measure of what those genes are doing together. This is called the module eigengene. Some gene signatures work in a similar way by combining expression from several genes into one score. We have one eigengene for each of our three modules and one value for each mouse in each eigengene.
+
+```{r module-summaries}
+module_eigengenes = gene_network$MEs
+
+# Leave out grey because those genes were not assigned to a module.
+module_eigengenes = module_eigengenes[, colnames(module_eigengenes) != "MEgrey", drop = FALSE]
+dim(module_eigengenes)
+head(module_eigengenes)
+
+# Check that these rows still follow the metadata before using its group labels.
+all(rownames(module_eigengenes) == meta$sample_id)
+table(meta$genotype)
+```
+
+The number of modules can vary with the number of genes and the WGCNA settings. Here we have 40 rows, one per mouse, and a column for each of the three modules. Since the eigengene gives us one score per mouse for the whole module, we can ask whether that score tends to be higher in WT or PPAR-alpha-deficient mice. Use the genotype in `meta` to split the scores into two groups, then make a boxplot for each module.
+
+```{r module-by-genotype, fig.width=10, fig.height=4.5}
+wt_samples = subset(meta, genotype == "wt")$sample_id
+ppar_samples = subset(meta, genotype == "ppar")$sample_id
+
+blue_wt = module_eigengenes[wt_samples, "MEblue"]
+blue_ppar = module_eigengenes[ppar_samples, "MEblue"]
+brown_wt = module_eigengenes[wt_samples, "MEbrown"]
+brown_ppar = module_eigengenes[ppar_samples, "MEbrown"]
+turquoise_wt = module_eigengenes[wt_samples, "MEturquoise"]
+turquoise_ppar = module_eigengenes[ppar_samples, "MEturquoise"]
+
+old_plot_settings = par(mfrow = c(1, 3))
+boxplot(blue_wt, blue_ppar, names = genotype_labels,
+        col = genotype_colors, ylab = "Eigengene score",
+        main = "Blue gene module")
+boxplot(brown_wt, brown_ppar, names = genotype_labels,
+        col = genotype_colors, ylab = "Eigengene score",
+        main = "Brown gene module")
+boxplot(turquoise_wt, turquoise_ppar, names = genotype_labels,
+        col = genotype_colors, ylab = "Eigengene score",
+        main = "Turquoise gene module")
+par(old_plot_settings)
+```
+
+A higher summary value means that the sample is toward one end of the module's shared expression pattern. It does not mean that every gene changed by that amount. We would inspect the genes and their annotations before assigning a biological explanation to the group.
+
+## Test the blue eigengene between genotypes
+
+Let us use the same Welch t-test as on Day 1 to test whether the mean blue eigengene score differs between WT and PPAR-alpha-deficient mice. Welch's t-test is a reasonable starting point when we want to compare the means of two independent groups, even if the groups have different spreads. With small samples, look for strong skew or extreme values in the plots before interpreting the test.
+
+```{r test-blue-module}
+t.test(blue_wt, blue_ppar)
+```
+
+## Look at the genes inside the modules
+
+The eigengene gives us one score per mouse for the whole module. Let us look at the individual genes with a heatmap. We will keep the WGCNA modules and cluster the genes within each module by their expression profiles. The two annotation strips show the genotype and diet of each mouse. Read across each strip in the same mouse order. Genotype forms clearer blocks, while diets are mixed within those blocks. To look more closely at diet, compare mice of the same genotype or revisit the lipid PCA.
+
+```{r module-gene-heatmap, fig.height=5.8}
+module_genes = subset(module_membership, module != "grey")
+module_expression = gene_samples[, module_genes$gene]
+
+# Scale each gene across mice, then put genes in rows for the heatmap.
+module_heatmap = t(scale(module_expression))
+diet_colors = c(ref = "grey70", coc = "sienna3", fish = "seagreen4",
+                lin = "mediumpurple3", sun = "gold2")
+module_annotation = HeatmapAnnotation(
+  Genotype = meta$genotype,
+  Diet = meta$diet,
+  col = list(Genotype = genotype_colors, Diet = diet_colors)
+)
+
+Heatmap(
+  module_heatmap,
+  name = "Expression z-score",
+  col = circlize::colorRamp2(c(-2, 0, 2), c("blue", "white", "red")),
+  top_annotation = module_annotation,
+  row_split = module_genes$module,
+  cluster_rows = TRUE,
+  cluster_row_slices = FALSE,
+  cluster_columns = TRUE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  column_title = "Gene expression within WGCNA modules"
+)
+```
+
+# Relate the gene modules to lipids
+
+There are only 21 fatty acids, so we can inspect each one directly. We will keep them as individual measurements and compare them with the three module eigengenes.
+
+## Start with one scatter plot
+
+Let us pull out the blue module and one lipid, C16.0 (palmitic acid). We will put them side by side so we can see the two values that make up each point in the plot.
+
+```{r pair-module-and-lipid}
+all(rownames(module_eigengenes) == rownames(lipid_samples))
+eigengene_lipid = data.frame(
+  sample_id = rownames(module_eigengenes),
+  blue_eigengene = module_eigengenes$MEblue,
+  palmitic_acid = lipid_samples[, "C16.0"]
+)
+head(eigengene_lipid, 3)
+```
+
+Find `Mouse_1` in the first row. Its blue module eigengene value goes on the x-axis, and its C16.0 percentage goes on the y-axis. We do the same for all 40 mice.
+
+```{r module-lipid-scatter}
+plot(eigengene_lipid$blue_eigengene, eigengene_lipid$palmitic_acid,
+     col = meta$color, pch = 16,
+     xlab = "Blue module eigengene values",
+     ylab = "C16.0 (% of fatty acids)",
+     main = "Gene module vs lipid measurement")
+
+# Fit one straight line using all 40 mice and add it to the plot.
+module_lipid_fit = lm(palmitic_acid ~ blue_eigengene, data = eigengene_lipid)
+fit_line_color = "grey65"
+abline(module_lipid_fit, col = fit_line_color, lty = 2, lwd = 2)
+
+legend("topleft", legend = c(genotype_labels, "Best fit (all mice)"),
+       col = c(genotype_colors, fit_line_color), pch = c(16, 16, NA),
+       lty = c(NA, NA, 2), lwd = 2, cex = 0.8)
+```
+
+The dashed line shows the overall linear trend across all mice. We can also describe the relationship using a correlation. A positive correlation means the two measurements tend to increase together. A negative correlation means one tends to decrease as the other increases. A correlation near zero means there is little relationship of the type being measured.
+
+With two vectors, `cor()` gives one correlation. The two vectors need to list the same mice in the same order. Here we will use Spearman correlation, which compares the ranks of the values.
+
+```{r one-correlation}
+palmitic_cor = cor(eigengene_lipid$blue_eigengene, eigengene_lipid$palmitic_acid,
+                   method = "spearman")
+as.numeric(palmitic_cor)
+```
+
+Look at the colors in the plot. Does the association occur across the full set of mice, or mostly because the genotypes form different groups? A pooled correlation can reflect the experimental groups. It does not establish that the genes directly control the lipid.
+
+## Compare the modules with all 21 lipids
+
+We can also give `cor()` two matrices or numeric data frames. The rows in both inputs must be the same mice in the same order. R correlates every column in the first input with every column in the second. With three eigengenes and 21 lipids, we get a matrix with three rows and 21 columns. Check that the `MEblue` row and `C16.0` column give the correlation from the scatterplot.
+
+```{r module-lipid-table}
+eigengene_lipid_cor = cor(module_eigengenes, lipid_samples, method = "spearman")
+dim(eigengene_lipid_cor)
+round(eigengene_lipid_cor[, 1:5], 2)
+```
+
+Let us display the same matrix using `Heatmap()` from Day 1. We will keep the input order to make individual lipids easy to find. Red means a positive correlation, and blue means a negative correlation.
+
+```{r module-lipid-heatmap, fig.width=10, fig.height=3.2}
+Heatmap(
+  eigengene_lipid_cor,
+  name = "Spearman correlation",
+  col = circlize::colorRamp2(c(-1, 0, 1), c("blue", "white", "red"), space = "RGB"),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  column_names_rot = 55,
+  column_title = "Gene module and lipid correlations",
+  # Write the correlation from row i, column j inside each square.
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid::grid.text(sprintf("%.2f", eigengene_lipid_cor[i, j]), x, y,
+                    gp = grid::gpar(fontsize = 7))
+  }
+)
+```
+
+These numbers describe the strength and direction of associations. They are not p-values or a list of significant results. Formal testing of many module-lipid associations would also require multiple-testing correction. For today, our goal is to understand the summaries and inspect the patterns in the samples.
+
+This is our horizontal integration example: groups of genes are connected to measurements of other molecules from the same mice.
+
+## What biology does the blue module suggest?
+
+We will pull the blue genes directly from our module assignments and look up their current mouse symbols. The lookup uses NCBI Gene and the original study's probe annotations where available. Labels we could not resolve stay unassigned. NCBI Gene <https://www.ncbi.nlm.nih.gov/datasets/docs/v2/data-processing/gene-processing/geneftp/> and original study <https://doi.org/10.1002/hep.21510>.
+
+```{r nutrimouse-gene-map, include=FALSE}
+mouse_gene_map = read.table(header = TRUE, text = "array_label mouse_symbol
+X36b4 Rplp0
+ACBP Dbi
+ACC1 Acaca
+ACC2 Acacb
+ACOTH Acot1
+ADSS1 Adss1
+ALDH3 Aldh3a1
+AOX Acox1
+BACT Actb
+BIEN Ehhadh
+BSEP Abcb11
+Bcl.3 Bcl3
+CACP Slc25a20
+CAR1 Nr1i3
+CBS Cbs
+CIDEA Cidea
+CPT2 Cpt2
+CYP24 Cyp24a1
+CYP26 Cyp26a1
+CYP27a1 Cyp27a1
+CYP27b1 Cyp27b1
+CYP2b10 Cyp2b10
+CYP2b13 Cyp2b13
+CYP2c29 Cyp2c29
+CYP3A11 Cyp3a11
+CYP4A10 Cyp4a10
+CYP4A14 Cyp4a14
+CYP7a Cyp7a1
+CYP8b1 Cyp8b1
+FAS Fasn
+FAT Cd36
+FDFT Fdft1
+FXR Nr1h4
+G6PDH G6pd2
+G6Pase G6pc1
+GK Gck
+GS Glul
+GSTa Gsta3
+GSTmu Gstm1
+GSTpi2 Gstp1
+HMGCoAred Hmgcr
+HPNCL Hacl1
+IL.2 Il2
+L.FABP Fabp1
+LCE Elovl6
+LDLr Ldlr
+LPK Pklr
+LPL Lpl
+LXRa Nr1h3
+LXRb Nr1h2
+Lpin1 Lpin1
+Lpin2 Lpin2
+Lpin3 Lpin3
+M.CPT1 Cpt1b
+MCAD Acadm
+MDR2 Abcb4
+MRP6 Abcc6
+MS Mtr
+MTHFR Mthfr
+NGFiB Nr4a1
+NURR1 Nr4a2
+Ntcp Slc10a1
+OCTN2 Slc22a5
+PDK4 Pdk4
+PECI Eci2
+PLTP Pltp
+PMDCI Ech1
+PON Pon1
+PPARa Ppara
+PPARd Ppard
+PPARg Pparg
+PXR Nr1i2
+Pex11a Pex11a
+RARa Rara
+RARb2 Rarb
+RXRa Rxra
+RXRb2 Rxrb
+RXRg1 Rxrg
+S14 Thrsp
+SHP1 Nr0b2
+SIAT4c St3gal4
+SR.BI Scarb1
+THIOL Acaa1a
+TRa Thra
+TRb Thrb
+Tpalpha Hadha
+Tpbeta Hadhb
+UCP2 Ucp2
+UCP3 Ucp3
+VDR Vdr
+VLDLr Vldlr
+Waf1 Cdkn1a
+ap2 Fabp4
+apoA.I Apoa1
+apoB Apob
+apoC3 Apoc3
+apoE Apoe
+c.fos Fos
+cHMGCoAS Hmgcs1
+cMOAT Abcc2
+i.BABP Fabp6
+i.BAT Slc10a2
+i.FABP Fabp2
+i.NOS Nos2
+mHMGCoAS Hmgcs2")
+```
+
+```{r extract-blue-module-symbols}
+blue_module = subset(module_membership, module == "blue")
+blue_module$mouse_symbol = mouse_gene_map$mouse_symbol[
+  match(blue_module$gene, mouse_gene_map$array_label)]
+head(blue_module)
+blue_symbols = unique(na.omit(blue_module$mouse_symbol))
+length(blue_symbols)
+```
+
+Run the Enrichr chunk if you have internet access. The handout includes the first five rows from the run with the 27 mapped blue-module genes at power 20. If you try a different power, rerun Enrichr with the new module.
+
+```{r offline-blue-module-kegg, include=FALSE}
+blue_kegg = read.delim(text = "Term	Overlap	Adjusted.P.value	Genes
+Fatty acid degradation	9/50	2.82892460716009e-16	HADHB;HADHA;CPT2;ACOX1;CYP4A10;EHHADH;ECI2;CYP4A14;ACAA1A
+PPAR signaling pathway	10/85	2.82892460716009e-16	CYP27A1;FABP1;CPT2;ACOX1;CYP4A10;EHHADH;DBI;CYP4A14;ACAA1A;HMGCS2
+Peroxisome	6/84	2.69312835949264e-08	ACOX1;EHHADH;ECI2;ECH1;HACL1;ACAA1A
+Valine, leucine and isoleucine degradation	5/56	1.7662402812041e-07	HADHB;HADHA;EHHADH;ACAA1A;HMGCS2
+Butanoate metabolism	3/27	7.88385579947593e-05	HADHA;EHHADH;HMGCS2")
+```
+
+```{r blue-module-kegg, eval=FALSE}
+library(enrichR)
+enrichment = enrichr(blue_symbols, "KEGG_2019_Mouse")
+blue_kegg = enrichment[["KEGG_2019_Mouse"]]
+```
+
+```{r read-module-pathways}
+head(blue_kegg[, c("Term", "Overlap", "Adjusted.P.value")], 5)
+blue_kegg$Genes[1]
+```
+
+Fatty acid degradation and PPAR signaling tie for the smallest adjusted p-value in the Enrichr results. The blue module includes genes involved in both pathways, which fits our comparison of wild-type and PPAR-alpha-deficient mice.
+
+When we use the 105 mapped genes on the array as the background, the adjusted p-values are 0.011 for fatty acid degradation and 1.00 for PPAR signaling.
+
+## Questions
+
+1. How many genes are in the blue module? How many are grey? Use `subset()` to list the genes in the turquoise module.
+2. Look across the three boxplots. Which eigengene shows the clearest separation between genotypes? At what step did we use the genotype labels?
+3. Look at the module heatmap. Each row is a gene, each column is a mouse, and blue and red show lower and higher expression for that gene. Use the genotype strip to find a block of blue-module genes with a similar pattern across genotypes. Do all the genes in that module follow the pattern equally closely? What do you notice when you look at the diet strip?
+4. Use `subset()` on `meta` to get WT and PPAR-alpha-deficient mice on the fish-oil diet (`fish`). Select their `MEblue` scores, make a boxplot, and use `t.test()` to compare them. Is the difference significant at 0.05 within this diet?
+5. Which module-lipid pairs have the strongest positive and negative correlations? Look up their values in `eigengene_lipid_cor`.
+6. Make a copy of `eigengene_lipid` called `eigengene_linoleic`. Add `lipid_samples[, "C18.2n.6"]` as a `linoleic_acid` column. Adapt the scatterplot and the best-fit line to use this lipid. Try adding the diet shapes with `pch = sample_diet_shapes`.
+7. Calculate the palmitic acid correlation again using just the WT mice. How does it compare with the correlation across all mice?
+8. Which two KEGG pathways tie for the smallest adjusted p-value? What do the two numbers in `9/50` count for fatty acid degradation? Find `CPT2` in the overlap, then find `Cpt2` in the list we submitted.
+9. Find the PPAR signaling row. Which genes does it share with fatty acid degradation? Use `blue_kegg$Genes` to check. How would you describe the blue module to a collaborator after seeing the panel-background results? WGCNA built the module from expression alone, so how does the result connect to the PPAR-alpha deficiency in these mice? The mouse KEGG pathway map shows the PPAR family, including alpha, beta/delta, and gamma. <https://www.kegg.jp/pathway/mmu03320>
+
+# Vertical integration: find sample groups with SNF
+
+## Learn patterns across both datasets
+
+Now let us change the question. We want to group mice using their combined gene and lipid profiles, then look at what distinguishes those groups.
+
+Similarity Network Fusion (SNF) starts by asking which mice look alike in each assay. We will compare mice using gene expression first, then do the same using fatty-acid profiles. Each comparison gives us a network of mice, with stronger connections between mice that look more alike. SNF combines the two networks. We will use the combined network to estimate how many groups there are and to assign each mouse to a cluster.
+
+All 40 mice in Nutrimouse have both assays. For this workflow the same mouse has to appear in the same row of each input table. This is where our work matching samples pays off.
+
+## Prepare the SNF input
+
+We will use the 40 most variable genes and all 21 fatty-acid percentages. This keeps the calculation small and brings the two assay sizes closer together. We select the genes using their standard deviations, before looking at genotype, diet, or cluster labels.
+
+```{r select-snf-features}
+gene_sd = apply(gene_samples, 2, sd)
+selected_genes = head(names(sort(gene_sd, decreasing = TRUE)), 40)
+
+# Center and scale the features within each table.
+genes_snf = scale(gene_samples[, selected_genes])
+lipids_snf = scale(lipid_samples)
+
+dim(genes_snf)
+dim(lipids_snf)
+all(rownames(genes_snf) == meta$sample_id)
+all(rownames(lipids_snf) == meta$sample_id)
+```
+
+Here we use base R's `scale()` to center and scale each feature across mice, as we did inside `prcomp()` earlier. Each gene or fatty acid now has a mean of zero and a standard deviation of one, so a feature with a large range does not automatically dominate the distance calculation. The package recommends standardizing continuous measurements before calculating distances. SNFtool manual <https://cran.r-project.org/web/packages/SNFtool/SNFtool.pdf>.
+
+The gene table has 40 rows and 40 gene columns. The lipid table has the same 40 rows and 21 lipid columns. The two `TRUE` results tell us both tables use the order in the metadata.
+
+## Compare mice within each dataset
+
+First measure how far apart each pair of mice is across the features in one assay. A small distance means two mice have similar measurements. A large distance means their profiles are farther apart. Distance is also the starting point for the hierarchical clustering in our heatmaps. The column tree uses distances between sample profiles, and the row tree uses distances between gene profiles. Here we will use Euclidean distance, the ordinary straight-line distance, for both assays. SNFtool's `dist2()` returns squared distances, so take the square root before passing them to the next step. ComplexHeatmap clustering <https://jokergoo.github.io/ComplexHeatmap-reference/book/a-single-heatmap.html#clustering>.
+
+```{r snf-distances}
+gene_distance = sqrt(SNFtool::dist2(genes_snf, genes_snf))
+lipid_distance = sqrt(SNFtool::dist2(lipids_snf, lipids_snf))
+
+dim(gene_distance)
+round(gene_distance[1:3, 1:3], 2)
+round(lipid_distance[1:3, 1:3], 2)
+```
+
+Now rows and columns both represent mice. The diagonal compares each mouse with itself, so its distance is zero. The value in row `Mouse_2`, column `Mouse_3` is their distance in that assay. Look down the same column in both tables to see how the distances change from genes to lipids.
+
+Next, `affinityMatrix()` turns distances into similarity weights. Larger weights mean more similar mice. The package's worked example uses a neighborhood setting of 20, a `sigma` of 0.5, and 20 rounds of fusion. We will use those settings here. Here `K` sets how many nearby mice the method considers, and `sigma` controls how quickly similarity drops as mice get farther apart. We will estimate the number of clusters later.
+
+```{r snf-affinities}
+snf_neighbors = 20
+snf_sigma = 0.5
+snf_iterations = 20
+
+gene_similarity = SNFtool::affinityMatrix(gene_distance, K = snf_neighbors, sigma = snf_sigma)
+lipid_similarity = SNFtool::affinityMatrix(lipid_distance, K = snf_neighbors, sigma = snf_sigma)
+
+round(gene_similarity[1:3, 1:3], 3)
+round(lipid_similarity[1:3, 1:3], 3)
+```
+
+Look at `Mouse_2` and `Mouse_3` again. In the gene network, `Mouse_2` has a stronger connection to `Mouse_1`. In the lipid network, it has a stronger connection to `Mouse_3`. Compare weights within one table at a time, since the two tables can use different ranges.
+
+## Fuse the networks
+
+When SNF updates a connection, it also looks at the two mice's neighbors. Imagine four mice called A, B, C, and D. In the gene data, A is close to C and B is close to D. If C and D look alike in the lipid data, their lipid connection can strengthen the connection between A and B in the gene network's next update. SNF updates the lipid network using the gene information in the same way.
+
+Give both similarity matrices to `SNF()`. It repeats the updates for 20 rounds, then averages the updated networks. Each value in the fused network is a similarity weight for a pair of mice.
+
+```{r fuse-networks}
+fused_similarity = SNFtool::SNF(list(gene_similarity, lipid_similarity),
+                                K = snf_neighbors, t = snf_iterations)
+dim(fused_similarity)
+round(fused_similarity[1:3, 1:3], 3)
+all(rownames(fused_similarity) == meta$sample_id)
+all(colnames(fused_similarity) == meta$sample_id)
+```
+
+The fused network has 40 rows and 40 columns. Both axes still list the mice in metadata order. The entry for `Mouse_2` and `Mouse_3` is one combined similarity weight. In our WGCNA heatmaps, each square compared two genes. Here each square compares two mice. A dark square marks a stronger connection. We will hide the self-comparisons on the diagonal in a copy used for plotting.
+
+```{r show-fused-network, fig.height=5}
+fused_for_plot = fused_similarity
+diag(fused_for_plot) = NA
+Heatmap(
+  fused_for_plot,
+  name = "SNF weight",
+  col = circlize::colorRamp2(c(0, max(fused_for_plot, na.rm = TRUE)), c("white", "navy")),
+  na_col = "grey90",
+  cluster_rows = FALSE, cluster_columns = FALSE,
+  show_row_names = FALSE, show_column_names = FALSE,
+  column_title = "Fused gene and lipid similarities",
+  row_title = "Mice"
+)
+```
+
+The rows and columns are in the order we loaded them. Each dark off-diagonal square shows a pair of mice with a strong connection in the fused network. Notice the two darker blocks near the diagonal. We will use the network to find groups of mice, then check how those groups relate to the metadata.
+
+## Estimate the number of clusters
+
+Ask `estimateNumberOfClustersGivenGraph()` to consider two through five groups. It returns two recommendations and a second choice for each. We will put the two first choices into a small table so we can compare them.
+
+```{r estimate-snf-clusters}
+set.seed(workshop_seed)
+cluster_estimates = SNFtool::estimateNumberOfClustersGivenGraph(fused_similarity, NUMC = 2:5)
+cluster_recommendations = data.frame(
+  method = c("Eigen-gap", "Rotation cost"),
+  clusters = c(cluster_estimates[["Eigen-gap best"]], cluster_estimates[["Rotation cost best"]])
+)
+cluster_recommendations
+```
+
+Eigen-gap looks for a break among the strongest patterns in the network. Rotation cost looks at how easily the network can be represented as distinct groups. Here eigen-gap suggests two groups, and rotation cost suggests four. Both are estimates based on how the network is organized.
+
+## Cluster the mice
+
+`spectralClustering()` takes the fused network and the number of groups we want. It assigns mice based on patterns of connections across the network and returns one label per row of the matrix. Add the mouse IDs to those labels so we can compare them with the metadata. Let us see how the two-group result lines up with genotype.
+
+```{r two-cluster-genotype-overlap}
+set.seed(workshop_seed)
+eigen_gap_clusters = SNFtool::spectralClustering(
+  fused_similarity, K = cluster_estimates[["Eigen-gap best"]]
+)
+names(eigen_gap_clusters) = rownames(fused_similarity)
+table(cluster = eigen_gap_clusters[meta$sample_id], genotype = meta$genotype)
+```
+
+Cluster 1 has all 20 wild-type mice and cluster 2 has all 20 PPAR-alpha-deficient mice. All 40 mice line up with genotype. Let us use the four groups suggested by rotation cost for the rest of the exercise so we can look for finer patterns in the gene and lipid profiles.
+
+```{r cluster-samples}
+n_clusters = cluster_estimates[["Rotation cost best"]]
+set.seed(workshop_seed)
+sample_clusters = SNFtool::spectralClustering(fused_similarity, K = n_clusters)
+names(sample_clusters) = rownames(fused_similarity)
+
+all(names(sample_clusters) == meta$sample_id)
+meta$cluster = sample_clusters[meta$sample_id]
+cluster_colors = c("1" = "darkgreen", "2" = "goldenrod", "3" = "deeppink3",
+                   "4" = "mediumpurple3", "5" = "sienna3")
+cluster_colors = cluster_colors[as.character(sort(unique(meta$cluster)))]
+meta$cluster_color = cluster_colors[as.character(meta$cluster)]
+head(meta[, c("sample_id", "genotype", "diet", "cluster", "cluster_color")])
+table(meta$cluster)
+```
+
+We now have four groups of 9, 9, 14, and 8 mice. The numbers are group labels. Let us see how the four groups correspond to the two groups we just found.
+
+```{r compare-snf-cluster-solutions}
+table(eigen_gap = eigen_gap_clusters[meta$sample_id], rotation_cost = meta$cluster)
+```
+
+Each cell counts the mice with that pair of labels. Look for columns with counts in both rows. Those four-group clusters contain mice from both of the original groups.
+
+## What do the clusters represent?
+
+We can use `table()` to compare the new cluster assignments with our metadata. We are using genotype and diet here to interpret the groups.
+
+```{r clusters-and-metadata}
+table(cluster = meta$cluster, genotype = meta$genotype)
+table(cluster = meta$cluster, diet = meta$diet)
+```
+
+Clusters 3 and 4 are each made up of a single genotype, while clusters 1 and 2 contain a mix. All eight coconut-diet mice are in cluster 2. The sunflower-diet mice are split between clusters 1 and 3. We used the genotype and diet labels to describe these groups after clustering.
+
+## Visualize the clusters
+
+We will use PCA to show each mouse's fused similarity profile on two axes. Both panels show the same mice, colored by cluster on the left and by genotype on the right. The shapes show diet, as in the morning PCA. The cluster assignments came from the full fused network.
+
+```{r display-clusters, fig.width=9, fig.height=5.5}
+similarity_pca = prcomp(fused_similarity, center = TRUE, scale. = FALSE)
+
+old_plot_settings = par(mfrow = c(1, 2))
+plot(similarity_pca$x[, 1], similarity_pca$x[, 2],
+     col = meta$cluster_color, pch = sample_diet_shapes,
+     xlab = "Fused similarity PC1", ylab = "Fused similarity PC2", main = "Sample clusters")
+legend("topright", legend = names(cluster_colors), col = cluster_colors, pch = 15, cex = 0.8)
+plot(similarity_pca$x[, 1], similarity_pca$x[, 2],
+     col = meta$color, pch = sample_diet_shapes,
+     xlab = "Fused similarity PC1", ylab = "Fused similarity PC2", main = "The same samples by genotype")
+legend("topright", legend = genotype_labels,
+       col = genotype_colors, pch = 15, cex = 0.7)
+par(old_plot_settings)
+```
+
+## Questions
+
+1. Use `fused_similarity` to look up the weight between `Mouse_2` and `Mouse_3`. What do the row, column, and value tell you?
+2. Check that the cluster counts add up to 40. Which output showed that the cluster labels were in metadata order?
+3. Look at the table comparing the two grouping methods. Which four-group labels contain mice from both two-group clusters?
+4. Look at the diet table for the four-group result. How are the fish-oil and linseed diets distributed across the clusters? Use the genotype table to help interpret that split.
+
+# Look at differences between the clusters
+
+## Choose two clusters to compare
+
+Yesterday we compared two experimental groups. We can use the same metadata-based selection to describe two of our new clusters. Let us compare cluster 3 (PPAR-alpha deficient) with cluster 4 (WT). Each includes four mice on the fish-oil diet and four on the linseed diet. Cluster 3 also includes three mice each on the reference and sunflower diets. Keep both genotype and diet in mind when you compare these clusters.
+
+```{r choose-cluster-comparison}
+group1 = 3
+group2 = 4
+group1_samples = subset(meta, cluster == group1)$sample_id
+group2_samples = subset(meta, cluster == group2)$sample_id
+length(group1_samples)
+length(group2_samples)
+```
+
+## Compare observed gene measurements
+
+Remember our first comparison on Day 1. Start with the boxplot, then use Welch's two-sample t-test to compare the group means. Here we will look at the first gene, `X36b4`. We will use the observed gene values and the cluster assignments from `meta`.
+
+```{r compare-one-gene}
+example_gene = colnames(gene_samples)[1]
+gene_group1 = gene_samples[group1_samples, example_gene]
+gene_group2 = gene_samples[group2_samples, example_gene]
+
+boxplot(gene_group1, gene_group2, names = c(group1, group2),
+        col = cluster_colors[as.character(c(group1, group2))],
+        xlab = "Cluster", ylab = "Observed gene expression",
+        main = example_gene)
+```
+
+Which cluster looks higher in the boxplot? Which has a wider spread? As on Day 1, we pass group 2 first so the confidence interval is for group 2 minus group 1.
+
+```{r test-one-gene}
+example_test = t.test(gene_group2, gene_group1)
+example_test
+example_test$p.value
+```
+
+Now let us use `colMeans()` to calculate a mean for every gene column. Then we can repeat the t-test with `apply()`. Yesterday we used `1` to go across protein rows. Here we use `2` because the genes are in columns. As on Day 1, use the Benjamini-Hochberg adjustment for multiple comparisons. These same measurements helped form the clusters. We will use the p-values to rank the genes that help describe the groups.
+
+Welch's t-test needs at least two observations in each group. If too few values are left after we remove missing values, `t.test()` gives an error. `tryCatch()` puts an `NA` in the p-value column for that gene and lets us continue to the next one.
+
+```{r gene-cluster-differences}
+gene_differences = data.frame(
+  gene = colnames(gene_samples),
+  group1_mean = colMeans(gene_samples[group1_samples, ], na.rm = TRUE),
+  group2_mean = colMeans(gene_samples[group2_samples, ], na.rm = TRUE)
+)
+gene_differences$difference = gene_differences$group2_mean - gene_differences$group1_mean
+
+# Run one Welch t-test per gene and add its p-value before sorting the table.
+gene_differences$pval = apply(gene_samples, 2, function(x) {
+  x1 = x[group1_samples]
+  x2 = x[group2_samples]
+  x1 = x1[is.finite(x1)]
+  x2 = x2[is.finite(x2)]
+  # Record NA if t.test() gives an error.
+  tryCatch(t.test(x2, x1)$p.value, error = function(e) NA_real_)
+})
+gene_differences$padj = p.adjust(gene_differences$pval, method = "BH")
+
+gene_differences = subset(gene_differences, is.finite(difference))
+gene_differences = gene_differences[order(gene_differences$padj, gene_differences$pval), ]
+head(gene_differences, 10)
+subset(gene_differences, gene == example_gene)
+```
+
+Check that the `X36b4` row gives the same means and raw p-value as the one-gene calculation. A positive difference means a higher observed mean in `group2`. The smallest adjusted p-values are at the top, with the raw p-value breaking ties. Let us plot the first gene in that table and show its values for all four clusters. `split()` gives `boxplot()` a group of values for each cluster.
+
+```{r gene-by-cluster}
+gene_to_plot = gene_differences$gene[1]
+boxplot(split(gene_samples[, gene_to_plot], meta$cluster),
+        col = cluster_colors,
+        xlab = "Cluster", ylab = "Observed gene expression",
+        main = gene_to_plot)
+```
+
+The boxplot shows whether the group difference describes most mice or is driven by a few observations. Look back at the genotype and diet tables as you interpret it.
+
+## Gene cluster volcano plot
+
+Let us use the Day 1 volcano plot to look at all the genes at once. Each point is one gene. The x-axis is the difference between the observed means (`group2 - group1`) on the supplied expression scale. The y-axis is `-log10()` of the adjusted p-value, so smaller adjusted p-values appear higher. As on Day 1, we will use an adjusted p-value cutoff of 0.05. Color shows which cluster has the higher mean among genes that pass the cutoff.
+
+```{r cluster-gene-volcano-table}
+gene_fdr_cutoff = 0.05
+gene_volcano = subset(gene_differences, is.finite(padj) & padj > 0)
+gene_volcano$neglog10padj = -log10(gene_volcano$padj)
+passes_fdr = gene_volcano$padj <= gene_fdr_cutoff
+higher_in_group2 = passes_fdr & gene_volcano$difference > 0
+higher_in_group1 = passes_fdr & gene_volcano$difference < 0
+gene_volcano$color = "grey60"
+gene_volcano$color[higher_in_group2] = "red"
+gene_volcano$color[higher_in_group1] = "blue"
+
+# The table is already sorted by adjusted p-value. Label up to two per direction.
+gene_labels = rbind(head(gene_volcano[higher_in_group2, ], 2),
+                    head(gene_volcano[higher_in_group1, ], 2))
+gene_labels[, c("gene", "difference", "padj")]
+```
+
+```{r cluster-gene-volcano}
+plot(gene_volcano$difference, gene_volcano$neglog10padj,
+     ylim = c(0, 1.12 * max(gene_volcano$neglog10padj, -log10(gene_fdr_cutoff))),
+     col = adjustcolor(gene_volcano$color, alpha.f = 0.7), pch = 16,
+     xlab = paste0("Mean difference (cluster ", group2, " minus cluster ", group1, ")"),
+     ylab = "-log10 adjusted p-value", main = "Gene cluster volcano plot")
+abline(v = 0, lty = 2)
+abline(h = -log10(gene_fdr_cutoff), lty = 2)
+text(gene_labels$difference, gene_labels$neglog10padj,
+     labels = gene_labels$gene, pos = 3, cex = 0.7)
+legend("topleft", legend = c(paste("Higher in cluster", c(group2, group1)),
+                             paste("Adjusted p >", gene_fdr_cutoff)),
+       col = c("red", "blue", "grey60"), pch = 16, cex = 0.8)
+```
+
+Find the gene we just boxplotted. Is it to the left or right of zero? Check that against its two means in the table.
+
+## Compare observed lipids
+
+We can use the same mean calculation with `lipid_samples`. Each mean is a percentage of the measured fatty acids. The difference is in percentage points.
+
+```{r lipid-cluster-differences}
+lipid_differences = data.frame(
+  lipid = colnames(lipid_samples),
+  group1_mean = colMeans(lipid_samples[group1_samples, ], na.rm = TRUE),
+  group2_mean = colMeans(lipid_samples[group2_samples, ], na.rm = TRUE)
+)
+lipid_differences$difference = lipid_differences$group2_mean - lipid_differences$group1_mean
+lipid_differences = subset(lipid_differences, is.finite(difference))
+lipid_differences = lipid_differences[order(abs(lipid_differences$difference), decreasing = TRUE), ]
+head(lipid_differences, 10)
+```
+
+```{r lipid-by-cluster}
+lipid_to_plot = lipid_differences$lipid[1]
+boxplot(split(lipid_samples[, lipid_to_plot], meta$cluster),
+        col = cluster_colors,
+        xlab = "Cluster", ylab = "Observed fatty acid (%)",
+        main = lipid_to_plot)
+```
+
+## Optional plot: cluster the observed gene profiles
+
+We can make a heatmap of the ten genes with the smallest adjusted p-values. Let us standardize each gene across the 40 mice. Blue means lower expression for that gene, white is near its average, and red means higher expression. The annotation above the heatmap uses the cluster colors from our metadata.
+
+```{r observed-cluster-heatmap}
+plot_genes = head(gene_differences$gene, 10)
+heatmap_values = scale(gene_samples[meta$sample_id, plot_genes])
+heatmap_clusters = factor(meta$cluster, levels = names(cluster_colors))
+
+column_annot = HeatmapAnnotation(
+  Cluster = heatmap_clusters,
+  col = list(Cluster = cluster_colors)
+)
+
+Heatmap(
+  t(heatmap_values), # genes in rows, mice in columns
+  name = "Z-score",
+  col = circlize::colorRamp2(c(-2, 0, 2), c("blue", "white", "red"), space = "RGB"),
+  top_annotation = column_annot,
+  na_col = "grey80",
+  show_column_names = FALSE,
+  cluster_rows = TRUE,
+  cluster_columns = TRUE,
+  # Split by the existing clusters and cluster mice within each group.
+  column_split = heatmap_clusters,
+  cluster_column_slices = FALSE,
+  column_gap = grid::unit(2, "mm"),
+  column_title = paste("Cluster", names(cluster_colors)),
+  row_title = "Observed gene profiles"
+)
+```
+
+Each block contains mice from one of the four clusters we already assigned. The small gaps separate those groups. Within each block, the column tree puts mice with similar expression patterns near each other. The row tree groups genes with similar patterns across the 40 mice.
+
+We prepared two datasets, fused their similarity networks, and used the fused network to cluster the mice. We then returned to the metadata and observed measurements to describe those groups.
+
+## Questions
+
+1. Try comparing clusters 1 and 2. Which diets are most common in these two groups? Rerun the cluster comparison code for this pair. Do the largest differences involve the same genes and lipids?
+2. Choose another gene from the results table and plot its values by cluster.
+3. Find a gene with a large difference and a gene with a small adjusted p-value. How do their boxplots compare?
+
+# Save the results
+
+We will save the gene modules, the fused network, the cluster assignments and metadata, and the tables describing cluster differences. The sample_id column lets us match the results with other files later.
+
+```{r save-results}
+module_scores = data.frame(sample_id = rownames(module_eigengenes), module_eigengenes)
+
+write.table(module_membership, file.path(work_folder, "day2_gene_modules.tsv"),
+            sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(module_scores, file.path(work_folder, "day2_module_summaries.tsv"),
+            sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(eigengene_lipid_cor, file.path(work_folder, "day2_module_lipid_correlations.tsv"),
+            sep = "\t", quote = FALSE, col.names = NA)
+write.table(meta, file.path(work_folder, "day2_sample_clusters.tsv"),
+            sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(gene_differences, file.path(work_folder, "day2_cluster_gene_differences.tsv"),
+            sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(lipid_differences, file.path(work_folder, "day2_cluster_lipid_differences.tsv"),
+            sep = "\t", quote = FALSE, row.names = FALSE)
+saveRDS(gene_network, file.path(work_folder, "day2_wgcna_fit.rds"))
+saveRDS(list(gene_similarity = gene_similarity, lipid_similarity = lipid_similarity,
+             fused_similarity = fused_similarity, cluster_estimates = cluster_estimates,
+             sample_clusters = sample_clusters, eigen_gap_clusters = eigen_gap_clusters,
+             selected_genes = selected_genes, metadata = meta,
+             gene_observed = gene_samples, lipid_observed = lipid_samples),
+        file.path(work_folder, "day2_snf_analysis.rds"))
+writeLines(capture.output(sessionInfo()), file.path(work_folder, "day2_sessionInfo.txt"))
+```
+
+Let us read the cluster table back in, as if we were opening it in a new session. Check that it still has one row per mouse and that the IDs and cluster labels match `meta`.
+
+```{r check-saved-clusters}
+saved_clusters = read.delim(file.path(work_folder, "day2_sample_clusters.tsv"))
+nrow(saved_clusters)
+head(saved_clusters[, c("sample_id", "cluster")])
+identical(saved_clusters$sample_id, meta$sample_id)
+all(saved_clusters$cluster == meta$cluster)
+```
+
+We should see 40 rows and two `TRUE` results.
+
+## Final exercise
+
+Write a short interpretation using the figures and tables we made.
+
+1. Describe one relationship between a gene module and a lipid from the horizontal analysis.
+2. Explain what a weight in the fused network represents and how we used the network to cluster the mice.
+3. Describe the sample clusters using both the experimental metadata and the observed gene/lipid profiles.
+4. Name one limitation you would investigate before drawing a biological conclusion.
+
+# Optional extensions
+
+## Joint pathway demonstration in MetaboAnalyst
+
+Joint Pathway Analysis is another example of horizontal integration. It takes a list of genes or proteins and a list of metabolites from the same biological comparison, maps them to known pathways, and tests for pathway enrichment. We will look for pathways supported by the protein/gene measurements, the metabolite measurements, and their combined evidence.
+
+We will use the MetaboAnalyst web interface for this exercise. The Joint Pathway Analysis web tutorial is at <https://drive.google.com/file/d/1HVoXNX98CZLcpr7MkpVZP5DueXcnZeIj/view>. The tool is also described in section 2.8 at <https://www.metaboanalyst.ca/docs/RTutorial.xhtml>.
+
+For this optional exercise, use the built-in human Proteins-Compounds example comparing severe and moderate COVID-19. It provides proteins identified by gene symbols and metabolites identified by HMDB IDs. Example datasets and input lists <https://www.metaboanalyst.ca/faces/upload/PathUploadView.xhtml>.
+
+### Run the analysis in the browser
+
+1. Open <https://www.metaboanalyst.ca/>, select Joint Pathway Analysis, choose Try our example, and select the human Proteins-Compounds COVID-19 example.
+2. Confirm the organism is Homo sapiens. Inspect the gene symbols and metabolite HMDB IDs. Check for duplicate identifiers.
+3. Inspect the mapping report. Which identifiers matched, and which were unmatched or ambiguous?
+4. Run the pathway analysis. Compare protein/gene-only, metabolite-only, and integrated results using the corresponding options. Does a joint result have evidence from both layers, or mostly one?
+5. Open one pathway and identify the proteins/genes and metabolites contributing to it. Look at the adjusted p-values as well as the pathway diagram.
+6. Download the pathway results table, mapping report, and figures. Save the input lists, selected settings, background/universe, and database version or date. Also save the R command history if it is offered in the session's download options.
+
+The background describes the genes and compounds that could have contributed to the enrichment result. Check what background the tool uses. Enrichment does not by itself tell us whether a pathway is activated or inhibited.
+
+### Bring the results into R
+
+We can use the website for the analysis and then make our own figures from the downloaded results table. This uses the same table-reading and plotting skills we practiced on Day 1.
+
+If the download is a ZIP file, extract it first and find the pathway results CSV. The following chunk has eval = FALSE because it needs the file you downloaded. Run it manually; file.choose() opens a dialog where you can select that CSV.
+
+```{r import-metaboanalyst-results, eval=FALSE}
+pathway_results = read.csv(file.choose(), check.names = FALSE)
+head(pathway_results)
+names(pathway_results)
+```
+
+check.names = FALSE preserves the column labels in the downloaded table. Inspect them before selecting columns; different result tables can use different labels.
+
+Use the pathway barplot from Day 1 as a starting point:
+
+1. Find the pathway-name and adjusted p-value columns in your downloaded table.
+2. Sort by adjusted p-value and select up to ten pathways.
+3. Plot -log10 adjusted p-value as a horizontal barplot, with the pathway names beside the bars.
+4. Add a line marking your chosen adjusted p-value cutoff. Keep pathways below that threshold distinct from terms shown only because they are among the top ten.
+
+Changing the plot changes how we display the downloaded results. It does not rerun or change the enrichment calculation. Loading a CSV and plotting it in base R does not require MetaboAnalystR.
+
+### Explore the saved R code later
+
+MetaboAnalyst can record the R commands used for an analysis. The command history lets us inspect the steps and settings, and provides a starting point for repeating or adapting an analysis locally.
+
+Those commands use MetaboAnalystR. Running them locally requires the package, its dependencies, and appropriate input file paths. Installation can take some troubleshooting because it includes several R/Bioconductor dependencies and system requirements. Official installation instructions <https://github.com/xia-lab/MetaboAnalystR>. Keep the command history with the input files and record the package and database versions if you try it.
+
+### Questions
+
+1. Which pathway has evidence from both the protein/gene list and the metabolite list? Identify at least one contributing feature from each.
+2. Does the integrated result agree with the single-layer analyses? What might explain a difference?
+3. What do the mapping report and background tell you about interpreting the result?
+4. What would you change in the website's figure to make it easier to read? Try making that change in R using the downloaded table.
+
+## Look up mouse gene identifiers
+
+Yesterday we mapped protein identifiers to gene symbols. When we use an annotation tool, we need to know what identifiers it expects. A sample ID tells us which animal we measured. A gene or compound ID tells us which molecule we measured.
+
+Some of today's genes use older labels. The small lookup below illustrates matching an old label to a current mouse gene symbol. For a full analysis, we would check the original probe annotation and keep the mapping table with our results.
+
+```{r identifier-example}
+example_mapping = data.frame(
+  original_label = c("AOX", "L.FABP", "FAS"),
+  mouse_symbol = c("Acox1", "Fabp1", "Fasn")
+)
+
+# match() gives the row position of each label in the lookup table.
+query = c("L.FABP", "FAS", "ACAT1")
+positions = match(query, example_mapping$original_label)
+positions
+example_mapping$mouse_symbol[positions]
+```
+
+Why does `ACAT1` return `NA`? We left it out of our lookup. *Acat1* is the official mouse symbol for acetyl-CoA acetyltransferase 1, and `ACAT-1` has also been used for *Soat1*. To map the column, look up the original probe ID or accession to see which gene was measured. NCBI Gene entry for *Acat1* <https://www.ncbi.nlm.nih.gov/gene/110446> and MGI entry for *Soat1* <https://www.informatics.jax.org/marker/MGI:104665>.
+
+Annotation resources such as UniProt or biomaRt can return no match or several possible matches. For metabolites, check whether the measured feature identifies a specific compound or a broader lipid group.
+
+## Mouse gene ID mapping with biomaRt
+
+This optional example maps three current mouse gene symbols to Ensembl and Entrez Gene IDs. It requires internet access. The mapping table may have more than one row per input symbol, and its row order may differ from our input.
+
+```{r optional-biomart, eval=FALSE}
+BiocManager::install("biomaRt", ask = FALSE, update = FALSE)
+library(biomaRt)
+mouse_mart = useEnsembl(biomart = "genes", dataset = "mmusculus_gene_ensembl")
+mouse_mapping = getBM(
+  attributes = c("mgi_symbol", "ensembl_gene_id", "entrezgene_id"),
+  filters = "mgi_symbol", values = c("Ppara", "Acaca", "Fasn"),
+  mart = mouse_mart
+)
+mouse_mapping
+```
+
+Keep the returned table and record its source, date, and annotation release. The biomaRt tutorial has more examples at <https://bioconductor.org/packages/release/bioc/vignettes/biomaRt/inst/doc/accessing_ensembl.html>.
+
+## Further reading
+
+- We published iModMix, a method similar to WGCNA that we designed for multi-omics, in *Bioinformatics*. It finds modules within each assay and lets us compare them across omics layers. Published paper <https://doi.org/10.1093/bioinformatics/btag030>.
+- Try iModMix interactively with the example data at <https://imodmix.moffitt.org/>. The app runs on a slow virtual machine, so I recommend running it locally for your own analysis. We have an R package with installation instructions and a worked tutorial at <https://bioconductor.org/packages/iModMix>.
+- The WGCNA tutorials cover choosing settings for a new dataset. <https://edo98811.github.io/WGCNA_official_documentation/>
+- The SNFtool manual includes a worked example of building similarity networks, fusing them, and clustering the samples. <https://cran.r-project.org/web/packages/SNFtool/SNFtool.pdf>
