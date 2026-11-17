@@ -1,5 +1,13 @@
 ## Introduction to Mass Spectrometry Data Analysis and Multi-Omics Integration Workshop 2026
 
+### Instructors
+
+Paul Stewart, PhD (paul.stewart@hci.utah.edu)
+
+Augustine Takyi, MS (augustine.takyi@hci.utah.edu)
+
+Filipa Blasco Lopes, PhD (u6071085@utah.edu)
+
 ### Slido Link
 
 (Available day of workshop)
