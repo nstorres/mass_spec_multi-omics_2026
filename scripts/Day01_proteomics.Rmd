@@ -1,5 +1,5 @@
 ---
-title: "Proteomics Data Analysis Workshop: Day 1"
+title: "Multi-omics Data Analysis Workshop: Day 1"
 author: Paul Stewart
 output:
   html_document:
@@ -8,8 +8,6 @@ output:
   pdf_document:
     toc: true
     latex_engine: xelatex
-params:
-  run_enrichr: false
 ---
 
 # Introduction
@@ -192,6 +190,10 @@ R has a built-in boxplot() function that can take a data frame as input:
 ```{r}
 boxplot(prot[, meta$expression_column])
 ```
+
+Each box summarizes the protein intensities for one sample. The line inside the box is the median, the middle value when we put the measurements in order. The bottom and top of the box mark the 25th and 75th percentiles, so the box contains the middle 50% of the values. The distance between these edges is the interquartile range, or IQR.
+
+The whiskers extend to the lowest and highest observed values that are within 1.5 times the IQR of the corresponding box edge. Values beyond those limits appear as separate circles and are called outliers. Here, outlier means a value falls beyond this plotting cutoff; it does not automatically mean the measurement is wrong or should be removed.
 
 The result is not very informative. Proteomics intensities are often strongly right-skewed. This means many values cluster at the lower end, while a few extreme values stretch the plot upward, and plotting the values spans many orders of magnitude. As a result, it can be difficult to see detail in the lower part of the distribution. Additionally, the sample labels are not displaying clearly, making the plot harder to interpret.
 
@@ -821,18 +823,12 @@ length(higher_genes)
 install.packages("enrichR")
 ```
 
-By default, knitting uses the Enrichr table saved from the original WT workshop. It was generated with the earlier gene mapping, so the numbers can differ from a fresh run. To use today's list, run the Enrichr chunk below by hand and then run the table and plot chunks. To include a fresh run when knitting, set `run_enrichr: true` at the top of this file.
+Run the chunk below to submit `higher_genes` to Enrichr and get the mouse KEGG pathway results.
 
-```{r saved-enrichr-example, include=FALSE, eval=!params$run_enrichr}
-kegg_results = read.delim("data/kegg_higher_WT_TP_2026-07-16.txt")
-kegg_plot_title = "Saved WT KEGG example"
-```
-
-```{r run-enrichr, eval=params$run_enrichr}
+```{r run-enrichr}
 library(enrichR)
 enrichment = enrichr(higher_genes, "KEGG_2019_Mouse")
 kegg_results = enrichment[["KEGG_2019_Mouse"]]
-kegg_plot_title = "Mouse KEGG pathways (live run)"
 ```
 
 We asked for one library. The line with the double brackets pulls that library's table out of the results. Look at `Term` for the pathway name, `Adjusted.P.value` for the adjusted p-value, and `Overlap` for how many of our genes hit that pathway. `Genes` gives the names of the matching genes.
@@ -855,7 +851,7 @@ pathway_names = str_trunc(top_kegg$Term, 40)
 old_margins = par(mar = c(5, 17, 4, 2))
 barplot(rev(bar_heights), names.arg = rev(pathway_names), horiz = TRUE,
         col = "steelblue", las = 1, cex.names = 0.75,
-        xlab = "-log10 adjusted p-value", main = kegg_plot_title)
+        xlab = "-log10 adjusted p-value", main = "Mouse KEGG pathways")
 abline(v = -log10(0.05), lty = 2)
 par(old_margins)
 ```
@@ -870,9 +866,9 @@ write.table(protein_results, "work/day1_protein_differential_abundance.tsv",
 writeLines(capture.output(sessionInfo()), "work/day1_sessionInfo.txt")
 ```
 
-After a live Enrichr run, use this chunk to save the new pathway results.
+Use this chunk to save the pathway results from Enrichr.
 
-```{r save-enrichr-results, eval=params$run_enrichr}
+```{r save-enrichr-results}
 write.table(kegg_results, "work/day1_enrichr_kegg.tsv",
             sep = "\t", quote = FALSE, row.names = FALSE)
 ```
@@ -883,9 +879,9 @@ write.table(kegg_results, "work/day1_enrichr_kegg.tsv",
 2. What happens if you change fc_cutoff from log2(2) to log2(1.5)? Keep the FDR threshold fixed and rerun the downstream chunks.
 3. Try making a histogram of the finite log2 fold changes with hist(). Does the distribution look symmetric?
 4. Among proteins higher in group2, which has the 42nd-smallest adjusted p-value? If there are fewer than 42, how would you avoid selecting a nonexistent row?
-5. For a live Enrichr run, make a gene list from proteins that pass both cutoffs and are higher in `group1`. Repeat the enrichment and compare the pathways from the two directions.
+5. Make a gene list from proteins that pass both cutoffs and are higher in `group1`. Repeat the enrichment and compare the pathways from the two directions.
 6. Pick one pathway in the bar plot. Use the `Genes` column for that pathway to find the genes that contributed.
-7. Change `group1` and `group2` to compare `KO_baseline` with `KO_TP`. Rerun from `choose-comparison` through the volcano plot. To see which pathways come up for KO, submit the new KO gene list to Enrichr. The saved example is for WT. Does a difference in significance between WT and KO prove a genotype-by-treatment interaction? (Hint: that needs an interaction test.)
+7. Change `group1` and `group2` to compare `KO_baseline` with `KO_TP`. Rerun from `choose-comparison` through the volcano plot. To see which pathways come up for KO, submit the new KO gene list to Enrichr. Does a difference in significance between WT and KO prove a genotype-by-treatment interaction? (Hint: that needs an interaction test.)
 
 # Knit to HTML or PDF
 
