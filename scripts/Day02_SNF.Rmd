@@ -120,7 +120,7 @@ Both tables have 40 rows for the same 40 mice. The gene table has 120 columns an
 
 ## Make the metadata table
 
-Nutrimouse gives the two assays in matched order, so row `1` in the gene table and row `1` in the lipid table refer to the same mouse. Let us use slightly more verbose sample names. Remember, names and descriptive comments will make your analyses really easy to follow for other people or when you come back to review months or years later. We will use `Mouse_1` for that `1` mouse in both assays and in the metadata.
+Nutrimouse gives the two assays in matched order, so row `1` in the gene table and row `1` in the lipid table refer to the same mouse. Let us use slightly more verbose sample names. Remember, names and descriptive comments will make your analyses really easy to follow for other people or when you come back to review months or years later. We will use `Mouse_1` for that `1` mouse in both assays and in the metadata and so on.
 
 ```{r sample-metadata}
 meta = data.frame(
@@ -233,11 +233,11 @@ sample(c("cat", "dog", "fish"), size = 1)
 
 ## Group genes that behave similarly
 
-WGCNA starts by asking which genes tend to go up and down together. It uses correlations to build a network of gene connections, then groups genes with similar connections into modules. Two genes that connect strongly to many of the same genes can end up in the same module.
+WGCNA (Weighted Gene Co-expression Network Analysis) identifies groups of genes with similar expression patterns across samples. It starts by calculating correlations between genes and uses these to build a network of gene connections. It then groups genes into modules based on how strongly they are connected to one another and how many connections they share with other genes.
 
-Since the modules come from the expression data, this is a useful approach when we are studying biology that is not captured by pathway databases. Once we know which genes belong to a module, we can always go back and use pathway analysis to see what biological processes those genes might capture.
+One advantage of WGCNA is that it identifies modules directly from the expression data rather than relying on predefined pathways. This means we can discover groups of genes that may not be captured by existing pathway databases. Once we have identified our modules, we can use pathway enrichment to understand their biological functions. We can also compare the modules with our lipid measurements to see how gene expression and lipid levels are related.
 
-First, let's use WGCNA's `goodSamplesGenes()` to check for genes or mice with too many missing measurements and genes with essentially no variation. It checks the numbers in the table. Questions about gene symbols come up when we look up annotations. The `allOK` result should be `TRUE` here.
+Before we start, let's use WGCNA's goodSamplesGenes() function to check our data. It looks for genes or mice with too many missing measurements and genes with essentially no variation across samples. The allOK result should be TRUE, indicating that our data pass these checks.
 
 ```{r wgcna-check}
 gene_check = goodSamplesGenes(gene_samples, verbose = 0)
@@ -246,9 +246,9 @@ gene_check$allOK
 
 ## Look at the gene correlations
 
-Let's start with the first two genes in our table. We have 40 measurements for each gene, one from each mouse, and we want to know if the genes tend to be high and low in the same mice. We can use `cor()` to calculate a correlation between these two vectors. A value near 1 means they tend to increase together, a value near −1 means they tend to move in opposite directions, and a value near zero means there is little to no relationship.
+Let's start by comparing the first two genes in our table. We have 40 expression measurements for each gene, one from each mouse. We want to know if the two genes have similar expression patterns across mice. We can use cor() to calculate their correlation. A value near +1 means that when one gene has higher expression, the other tends to have higher expression too. A value near −1 means they tend to show opposite patterns, while a value near zero means there is little linear relationship.
 
-We could repeat this for every pair of genes, but `cor()` can do that for us when we give it the whole table. Since genes are in columns, it compares every column with every other column. Run the first line below, then find that same value in row 1, column 2 of `gene_cor`.
+We could repeat this for every pair of genes, but cor() can do that for us when we give it the whole table. Since genes are in columns, it compares every gene with every other gene and returns a correlation matrix. Run the first line below to calculate the correlation between our first two genes, then find that same value in row 1, column 2 of gene_cor.
 
 ```{r gene-correlations}
 cor(gene_samples[, 1], gene_samples[, 2])
@@ -263,7 +263,9 @@ We can represent gene correlations as a network, where each gene is a node, and 
 
 For this analysis, we are interested in genes with strong positive correlations, meaning genes whose expression levels increase and decrease together across samples. We use the "signed" option in WGCNA to give these genes stronger connections while reducing the influence of negative correlations. First, WGCNA uses (1 + r) / 2, where r is the correlation, to convert correlations into values between 0 and 1. For example, a correlation of +0.9 becomes 0.95, while −0.9 becomes 0.05. 
 
-Next we raise those connection values to a power. Values between 0 and 1 get smaller when we raise them to a power, and smaller starting values drop toward zero faster. For example, at power 20, a connection value of 0.80 becomes about 0.01 and a value of 0.95 becomes about 0.36. This is called soft thresholding because each pair keeps a weight that describes its connection strength. Hard thresholding makes a yes-or-no decision. For example, we could give a pair a connection of 1 if its correlation is at least 0.8 and a connection of 0 otherwise. Correlations of 0.79 and 0.81 would then give very different results. Soft thresholding changes the weights smoothly as the correlations change.
+Next we raise those connection values to a power. Values between 0 and 1 get smaller when we raise them to a power, and smaller starting values drop toward zero faster. For example, at power 20, a connection value of 0.80 becomes about 0.01 and a value of 0.95 becomes about 0.36. This is called soft thresholding because each pair keeps a weight that describes its connection strength. The result is a weighted network, where connections can have different strengths rather than simply being present or absent. 
+
+Hard thresholding makes a yes-or-no decision. For example, we could give a pair a connection of 1 if its correlation is at least 0.8 and a connection of 0 otherwise. Correlations of 0.79 and 0.81 would then give very different results. Soft thresholding changes the weights smoothly as the correlations change.
 
 ## Choose a soft-thresholding power
 
@@ -288,22 +290,18 @@ power_check = pickSoftThreshold(gene_samples, powerVector = candidate_powers,
                                 RsquaredCut = fit_cutoff, networkType = "signed",
                                 verbose = 0)
 ```
+In addition to calculating the fit scores for each power, pickSoftThreshold() tries to recommend a power automatically based on our target fit of 0.90. Let's see what it recommends.
 
 ```{r automatic-wgcna-power}
 power_check$powerEstimate
 ```
 
-We will mark power 20 on the plots so we can see how it compares with the other choices.
-
-```{r choose-workshop-power}
-soft_power = 20
-```
+We get NA, meaning none of the powers we tested reached our target of 0.90. That does not mean we cannot choose a power ourselves. Let's look at the two diagnostic plots to see which power might be a reasonable choice.
 
 ```{r plot-wgcna-power, fig.width=9, fig.height=4.8}
 power_results = power_check$fitIndices[, c("Power", "SFT.R.sq", "slope", "mean.k.")]
 # Give a positive score only when highly connected genes are less common.
 signed_fit = -sign(power_results$slope) * power_results$SFT.R.sq
-chosen_fit = signed_fit[power_results$Power == soft_power]
 
 # Save the current layout before changing the number of plot panels.
 plot_settings = par("mfrow")
@@ -312,28 +310,26 @@ plot(power_results$Power, signed_fit, type = "n", ylim = c(-1, 1.04),
      xlab = "Soft-thresholding power", ylab = "Scale-free topology fit (signed R-squared)",
      main = "Scale independence")
 abline(h = fit_cutoff, col = "red", lty = 2)
-abline(v = soft_power, col = "steelblue4", lty = 3)
-power_labels = ifelse(power_results$Power == soft_power, "", power_results$Power)
-text(power_results$Power, signed_fit, labels = power_labels, col = "firebrick", cex = 0.8)
-points(soft_power, chosen_fit, col = "steelblue4", pch = 16, cex = 0.65)
-text(soft_power, chosen_fit, labels = paste0(soft_power, " (", round(chosen_fit, 3), ")"),
-     pos = 3, col = "steelblue4", cex = 0.8)
+text(power_results$Power, signed_fit, labels = power_results$Power, col = "firebrick", cex = 0.8)
 
 plot(power_results$Power, power_results$mean.k., type = "n",
      xlab = "Soft-thresholding power", ylab = "Mean connectivity",
      main = "Mean connectivity")
-abline(v = soft_power, col = "steelblue4", lty = 3)
 text(power_results$Power, power_results$mean.k., labels = power_results$Power,
      col = "firebrick", cex = 0.8)
 # Restore the layout we saved before making these plots.
 par(mfrow = plot_settings)
 ```
 
-Now let's look at the results from pickSoftThreshold(). Remember, we want to choose a power that gives us a network with a reasonable scale-free pattern, without making all the connections between genes too weak. The plot on the left shows the scale-free topology fit. Each number represents a different power, and the y-axis shows how closely the resulting network follows the scale-free pattern. Ideally, we want a high, positive fit score that reaches the red line at 0.90. None of the powers quite reaches this threshold, but power 20 comes closest, with a fit of about 0.895 (marked by the dotted blue line). Notice that power 1 has a negative score. This means the relationship between connectivity and its frequency goes in the opposite direction from what we expect for a scale-free network, so we would not choose it despite its high R-squared.
+Now let's look at the results from pickSoftThreshold(). Remember, we want to choose a power that gives us a network with a reasonable scale-free pattern, without making all the connections between genes too weak. The plot on the left shows the scale-free topology fit. Each number represents a different power, and the y-axis shows how closely the resulting network follows the scale-free pattern. Ideally, we want a high, positive fit score that reaches the red line at 0.90. None of the powers quite reaches this threshold, but power 20 comes closest, with a fit of about 0.895. Notice that power 1 has a negative score. This means the relationship between connectivity and its frequency goes in the opposite direction from what we expect for a scale-free network, so we would not choose it despite its high R-squared.
 
 The plot on the right shows mean connectivity, or the average sum of connection strengths across all 120 genes. As we increase the power, connections become weaker, so mean connectivity decreases. For example, at power 12, mean connectivity is about 5.66, but by power 20 it has dropped to 1.69. Remember, these values represent the sum of connection strengths, not the number of connections. Why does this matter? If we choose a power that is too high, we risk making nearly all the connections very weak. We want a good scale-free fit, but we also want to preserve meaningful connections between genes.
 
 Looking at both plots together, we will use power 20 for this exercise. It gives us the best scale-free fit among the powers tested, although mean connectivity is relatively low. You may also notice that pickSoftThreshold() returns NA for its automatic power estimate because none of the powers reaches our target of 0.90. Interestingly, using the function's default threshold of 0.85 would select power 1, even though its fit has the wrong direction. This is why we examine both plots rather than relying entirely on the automatic estimate. There is no universally optimal power, and the choice depends on the characteristics of the dataset.
+
+```{r choose-workshop-power}
+soft_power = 20
+```
 
 ### See what signing and the power do to gene connections
 
@@ -622,15 +618,17 @@ blue_kegg$Genes[1]
 
 ## Learn patterns across both datasets
 
-So far, we have used WGCNA to identify groups of genes with similar expression patterns and examined how those groups correlate with fatty-acid measurements. Now we want to answer a different question: Can we combine gene expression and lipid measurements to identify groups of mice with similar molecular profiles? To do this, we will use a method called Similarity Network Fusion (SNF).
+So far, we have used WGCNA to identify groups of genes with similar expression patterns and examined how those groups correlate with fatty-acid measurements. Now we want to answer a different question: can we combine gene expression and lipid measurements to identify groups of mice with similar molecular profiles? To do this, we will use a method called Similarity Network Fusion (SNF).
 
-The basic idea is to determine which mice are most similar to each other based on their measurements. We start by calculating the distances between mice using their gene expression profiles, then repeat the process using their lipid profiles. Mice with similar measurements will have smaller distances, while mice with very different measurements will have larger distances. SNF uses these distances to build two networks, one for genes and one for lipids, where mice are connected based on how similar they are. It then combines these networks into a single network that captures information from both datasets. We can use this combined network to cluster the mice and see how the resulting groups relate to genotype and diet.
+The basic idea is to determine which mice are most similar to each other based on their measurements. We start by calculating the distances between mice using their gene expression profiles, then repeat the process using their lipid profiles. Mice with similar measurements will have smaller distances, while mice with very different measurements will have larger distances. We then convert these distances into similarity networks, where mice with similar profiles have stronger connections. SNF combines the two networks into a single network that captures information from both datasets. We can use this combined network to cluster the mice and see how the resulting groups relate to genotype and diet.
 
 Remember that in WGCNA, each node in our network represented a gene, and we used correlations to identify groups of genes. In SNF, each node represents a mouse, and we use similarities between mice to identify groups of samples. Since we are combining two datasets, we also need to make sure that the same mouse appears in the same row of both tables.
 
 ## Prepare the SNF input
 
-We will use the 40 most variable genes and all 21 fatty acids. To identify the most variable genes, we calculate the standard deviation of each gene across the 40 mice and select the 40 with the highest values. We are not using genotype or diet to select these genes, just how much their expression varies across samples. This keeps the example manageable while retaining genes that show substantial variation between mice.
+We will use the 40 most variable genes and all 21 fatty acids. To identify the most variable genes, we calculate the standard deviation of each gene across the 40 mice and select the 40 with the highest values. Note that we are not using genotype or diet to select these genes, just how much their expression varies across samples. This keeps the example manageable while retaining genes that show substantial variation between mice.
+
+Before calculating distances, we also need to standardize our measurements. Remember that Euclidean distance combines differences across all features, so genes or lipids with larger numerical variation could have a greater influence on the results. We use R's scale() function to give each gene and fatty acid a mean of zero and a standard deviation of one across mice, just as we did earlier with PCA.
 
 ```{r select-snf-features}
 gene_sd = apply(gene_samples, 2, sd)
@@ -646,15 +644,11 @@ all(rownames(genes_snf) == meta$sample_id)
 all(rownames(lipids_snf) == meta$sample_id)
 ```
 
-Before calculating distances between mice, we need to make sure that differences in measurement scales do not affect our results. For example, gene expression and fatty-acid percentages are measured on very different scales. We use R's scale() function to standardize each gene and fatty acid across the 40 mice, giving each feature a mean of zero and a standard deviation of one. This is the same scaling we used earlier with PCA. Now, features with larger numerical values will not automatically contribute more to the distances between mice.
-
-Our gene table has 40 rows (mice) and 40 columns (genes), while the lipid table has the same 40 mice and 21 fatty acids. The two TRUE results confirm that the samples are in the same order as our metadata.
+Our gene table now has 40 rows (mice) and 40 columns (genes), while the lipid table has the same 40 mice and 21 fatty acids. The two TRUE results confirm that the samples are in the same order as our metadata. Importantly, we have scaled each dataset separately because we will calculate distances between mice within each dataset before combining the resulting similarity networks.
 
 ## Compare mice within each dataset
 
-Now we want to determine which mice have similar molecular profiles. We will start by calculating Euclidean distances between every pair of mice, separately for the gene and lipid datasets. Euclidean distance is simply the straight-line distance between two points. If we had only two measurements, we could plot each mouse as a point and measure the distance between them. We are doing the same thing here, except we have 40 measurements for each mouse in the gene data and 21 in the lipid data. Mice with similar profiles will have smaller distances, while mice with different profiles will have larger distances.
-
-SNFtool's `dist2()` returns squared distances, so `sqrt()` completes the calculation:
+Now we want to determine which mice have similar molecular profiles. We will start by calculating Euclidean distances between every pair of mice, separately for the gene and lipid datasets. Euclidean distance is the straight-line distance between two points, but it can also be calculated across many dimensions. For each pair of mice, we calculate the differences across all 40 genes (or 21 lipids), square those differences, add them together, and take the square root. Mice with similar profiles will have smaller distances, while mice with different profiles will have larger distances. SNFtool's `dist2()` returns squared distances, so `sqrt()` completes the calculation:
 
 ```{r snf-distances}
 gene_distance = sqrt(dist2(genes_snf, genes_snf))
@@ -667,12 +661,13 @@ round(lipid_distance[1:3, 1:3], 2)
 
 We now have two distance matrices, one for genes and one for lipids. In each matrix, both the rows and columns represent mice, so each value tells us how far apart two mice are based on their measurements. Notice that the diagonal is zero because each mouse has a distance of zero from itself. Compare the same pair of mice in the two matrices. Their distances may differ depending on if we are looking at gene expression or lipid measurements.
 
-Next, we need to turn these distances into similarities. SNFtool uses affinityMatrix() to do this, giving stronger connections to mice with similar molecular profiles and weaker connections to mice that are more different. We do this separately for genes and lipids, creating two similarity networks that we will combine in the next step.
+Next, we need to turn these distances into similarities. SNFtool uses affinityMatrix() to do this, giving stronger connections to mice with similar molecular profiles and weaker connections to mice that are more different. When calculating these connection strengths, it also considers how close each mouse is to its nearest neighbors, accounting for differences in how tightly grouped the mice are.
+
+We need to choose two settings: K determines how many nearby mice are used to calculate these similarities, while sigma controls how quickly the connection strengths decrease with distance. For this exercise, we will use K = 20 and sigma = 0.5, following the example provided in the SNFtool documentation. We apply these settings separately to the gene and lipid distances to create two similarity networks.
 
 ```{r snf-affinities}
 snf_neighbors = 20
 snf_sigma = 0.5
-snf_iterations = 20
 
 gene_similarity = affinityMatrix(gene_distance, K = snf_neighbors, sigma = snf_sigma)
 lipid_similarity = affinityMatrix(lipid_distance, K = snf_neighbors, sigma = snf_sigma)
@@ -681,13 +676,17 @@ round(gene_similarity[1:3, 1:3], 3)
 round(lipid_similarity[1:3, 1:3], 3)
 ```
 
-We now have two similarity matrices, again with 40 rows and 40 columns. This time, larger values indicate stronger connections between mice. Look at Mouse_2 and Mouse_3 again. In the gene network, Mouse_2 has a stronger connection to Mouse_1, while in the lipid network it has a stronger connection to Mouse_3. This shows why combining the datasets might be useful: mice that look similar based on gene expression may not be the same mice that look similar based on their lipids.
+We now have two similarity matrices, again with 40 rows and 40 columns. Notice that unlike our distance matrices, where smaller values indicated greater similarity, larger values now indicate stronger connections between mice. Look at Mouse_2 and Mouse_3 again. In the gene network, Mouse_2 has a stronger connection to Mouse_1, while in the lipid network it has a stronger connection to Mouse_3. This shows why combining the datasets might be useful: mice that look similar based on gene expression may not be the same mice that look similar based on their lipids.
 
 ## Fuse the networks
 
-Now that we have our two similarity networks, we can combine them using the SNF() function. Rather than simply averaging the two matrices, SNF allows the networks to exchange information about which mice are similar to one another. It considers not only the connection between two mice, but also their connections to other nearby mice. Over several rounds, the gene network is updated using information from the lipid network, and vice versa. After 20 rounds, SNF combines the updated networks into one fused similarity matrix that we can use to cluster our mice.
+Now that we have our two similarity networks, we can combine them using the SNF() function. Rather than simply averaging the two matrices, SNF allows the networks to exchange information about which mice are similar to one another. It considers not only the connection between two mice, but also their connections to other nearby mice. Over several rounds, the gene network is updated using information from the lipid network, and vice versa.
+
+We will use the same neighborhood size (K = 20) and run 20 rounds of updates, again following the SNFtool example. After these updates, SNF combines the networks into a single similarity matrix that we can use to cluster our mice.
 
 ```{r fuse-networks}
+snf_iterations = 20
+
 fused_similarity = SNF(list(gene_similarity, lipid_similarity),
                                 K = snf_neighbors, t = snf_iterations)
 dim(fused_similarity)
