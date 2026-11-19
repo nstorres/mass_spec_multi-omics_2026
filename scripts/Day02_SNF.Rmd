@@ -588,15 +588,13 @@ length(blue_symbols)
 
 Let us send the blue module's gene symbols to Enrichr and ask which mouse KEGG pathways they overlap with. `enrichr()` returns a list of results tables, so we select the `KEGG_2019_Mouse` table and store it as `blue_kegg`.
 
-These two chunks are marked `eval = FALSE` so knitting does not depend on the Enrichr web service. Run them manually in order during the workshop. If Enrichr is unavailable, skip them and questions 8–9, then continue with SNF.
-
-```{r blue-module-kegg, eval=FALSE}
+```{r blue-module-kegg, eval=TRUE}
 library(enrichR)
 enrichment = enrichr(blue_symbols, "KEGG_2019_Mouse")
 blue_kegg = enrichment[["KEGG_2019_Mouse"]]
 ```
 
-```{r read-module-pathways, eval=FALSE}
+```{r read-module-pathways, eval=TRUE}
 head(blue_kegg[, c("Term", "Overlap", "Adjusted.P.value")], 5)
 blue_kegg$Genes[1]
 ```
@@ -1104,9 +1102,9 @@ Those commands use MetaboAnalystR. Running them locally requires the package, it
 
 ## Mouse gene ID mapping with biomaRt
 
-Earlier we read a prepared table to map the older Nutrimouse labels to mouse gene symbols. For our own projects, the biomaRt package lets us query Ensembl for gene identifiers and annotations. This optional example starts with three current mouse gene symbols and returns their Ensembl and Entrez Gene IDs.
+Earlier, we used a prepared table to convert the older Nutrimouse gene labels into mouse gene symbols. But what if we need to do this for our own data? The Bioconductor package biomaRt allows us to query the Ensembl database directly to retrieve gene identifiers and annotations. For example, we might want to convert gene symbols into Ensembl or Entrez Gene IDs, or look up other information about our genes.
 
-First install and load the package, then connect to the mouse gene database. In `useEnsembl()`, `biomart = "genes"` selects gene annotations, and `dataset = "mmusculus_gene_ensembl"` selects mouse. For human data, the dataset is `"hsapiens_gene_ensembl"`.
+Let's try a simple example using three mouse genes. First, we need to install and load biomaRt, then connect to the Ensembl mouse gene database using useEnsembl(). The biomart = "genes" argument selects the gene annotation database, while dataset = "mmusculus_gene_ensembl" tells Ensembl that we are working with mouse genes. For human data, we would use "hsapiens_gene_ensembl" instead.
 
 ```{r connect-biomart, eval=FALSE}
 BiocManager::install("biomaRt", ask = FALSE, update = FALSE)
@@ -1114,12 +1112,7 @@ library(biomaRt)
 mouse_mart = useEnsembl(biomart = "genes", dataset = "mmusculus_gene_ensembl")
 ```
 
-`getBM()` retrieves our mapping table. Its arguments tell Ensembl what we have and what we want back:
-
-- `filters` identifies our input type: `"mgi_symbol"` means mouse gene symbols.
-- `values` gives the actual symbols to look up.
-- `attributes` names the output columns. Include the input symbol so we can match the returned IDs to our genes.
-- `mart` supplies the database connection we just made.
+Now we can use getBM() to retrieve the gene annotations. We specify the identifiers we already have using filters and values, and the information we want back using attributes. Here, "mgi_symbol" tells Ensembl that our inputs are mouse gene symbols, and we provide three examples: Ppara, Acaca, and Fasn. We ask Ensembl to return their gene symbols, Ensembl gene IDs, and Entrez Gene IDs. Finally, mart = mouse_mart tells the function which database to query.
 
 ```{r optional-biomart, eval=FALSE}
 mouse_mapping = getBM(
@@ -1130,7 +1123,9 @@ mouse_mapping = getBM(
 mouse_mapping
 ```
 
-How do we find the names of other mapping options? `listFilters()` lists the input types and query restrictions, and `listAttributes()` lists the output fields. The tables include descriptions. We can also search them; below, `pattern = "uniprot"` finds output options containing that text.
+We now have a table mapping our three gene symbols to their corresponding identifiers! Notice that we included the original gene symbols in the output so we know which IDs belong to which genes. In practice, the results may not be returned in the same order as our inputs, and some genes may have multiple matches or no matches at all. We should always check the mappings before adding them back to our original dataset.
+
+What if we want to look up something other than Ensembl or Entrez IDs? biomaRt provides functions to explore all the available options. listFilters() shows the types of identifiers and other criteria we can use as inputs, while listAttributes() shows the information we can retrieve. We can also use searchAttributes() to search for particular fields, such as UniProt identifiers.
 
 ```{r explore-biomart-options, eval=FALSE}
 mapping_inputs = listFilters(mouse_mart)
@@ -1140,14 +1135,16 @@ head(mapping_outputs)
 searchAttributes(mouse_mart, pattern = "uniprot")
 ```
 
-Use `View(mapping_inputs)` or `View(mapping_outputs)` to browse the complete tables in RStudio. `listDatasets(mouse_mart)` lists the available species datasets. This lets us adapt the same query to different identifiers, annotations, or organisms.
+You can use View(mapping_inputs) or View(mapping_outputs) to browse the full tables in RStudio. The listDatasets() function also lets you explore the available organisms. This makes biomaRt useful for many different annotation tasks, including mapping between gene symbols, Ensembl IDs, Entrez IDs, and protein identifiers.
 
-The returned mapping may have several rows for one symbol and may arrive in a different order. Use `match()` with the input-symbol column as we did earlier. A label with no returned match will give `NA`; if a symbol has several matches, inspect those rows before choosing an ID. Keep the mapping table and record the date and Ensembl release. The biomaRt tutorial has more examples at <https://bioconductor.org/packages/release/bioc/vignettes/biomaRt/inst/doc/accessing_ensembl.html>.
+Keep in mind that biomaRt queries a live database, so you need an internet connection, and annotations may change between Ensembl releases. For reproducibility, it is good practice to save your mapping table and record which Ensembl release you used.
+
+The biomaRt tutorial has more examples at <https://bioconductor.org/packages/release/bioc/vignettes/biomaRt/inst/doc/accessing_ensembl.html>.
 
 ## Further reading
 
-- We published iModMix, a method similar to WGCNA that we designed for multi-omics, in *Bioinformatics*. It finds modules within each assay and lets us compare them across omics layers. Published paper <https://doi.org/10.1093/bioinformatics/btag030>.
-- Try iModMix interactively with the example data at <https://imodmix.moffitt.org/>. The app runs on a slow virtual machine, so I recommend running it locally for your own analysis. We have an R package with installation instructions and a worked tutorial at <https://bioconductor.org/packages/iModMix>.
+- We published iModMix, a method similar to WGCNA that we designed for multi-omics, in Bioinformatics. Published paper <https://doi.org/10.1093/bioinformatics/btag030>.
+- Try iModMix interactively with the example data at <https://imodmix.moffitt.org/>. The app runs on a slow virtual machine, so if you are really interested I recommend running it locally for your own analysis. We have an R package with installation instructions and a worked tutorial at <https://bioconductor.org/packages/iModMix>.
 - The WGCNA tutorials cover choosing settings for a new dataset. <https://edo98811.github.io/WGCNA_official_documentation/>
 - The SNFtool manual includes a worked example of building similarity networks, fusing them, and clustering the samples. <https://cran.r-project.org/web/packages/SNFtool/SNFtool.pdf>
-- Ever wonder which statistical test to use and why? The Handbook of Biological Statistics is one of my favorite free books, with explanations and biological examples: <https://www.biostathandbook.com/>. Its companion provides the R code for many of those examples: <https://rcompanion.org/rcompanion/>.
+

@@ -1811,10 +1811,10 @@ measurements in order. The bottom and top of the box mark the 25th and
 distance between these edges is the interquartile range, or IQR.</p>
 <p>The whiskers extend to the lowest and highest observed values that
 are within 1.5 times the IQR of the corresponding box edge. Values
-beyond those limits appear as separate circles and are called outliers.
-Here, outlier means a value falls beyond this plotting cutoff; it does
-not automatically mean the measurement is wrong or should be
-removed.</p>
+beyond those limits appear as separate circles (or sometimes dots) and
+are called outliers. Here, outlier means a value falls beyond this
+plotting cutoff, but it does not automatically mean the measurement is
+wrong or should be removed.</p>
 <p>The result is not very informative. Proteomics intensities are often
 strongly right-skewed. This means many values cluster at the lower end,
 while a few extreme values stretch the plot upward, and plotting the
@@ -1842,10 +1842,6 @@ prot[1:5, 1:5]</code></pre>
 If your dataset has zeros, negative values, or infinities and you decide
 they should be treated as missing, you can use brackets to replace those
 entries before taking <code>log2()</code>.</p>
-<pre class="r"><code># prot_clean = prot_raw[, meta$expression_column]
-# bad_values = !is.finite(as.matrix(prot_clean)) | prot_clean &lt;= 0
-# prot_clean[bad_values] = NA_real_
-# prot_clean = log2(prot_clean)</code></pre>
 <p>Now that the data has been log2-transformed, let us replot it. Note
 that due to size constraints, there may be some overlap in the plot
 elements when this is knit into a PDF.</p>
@@ -1898,7 +1894,7 @@ part of the tidyverse suite of R packages, and it’s a powerful system
 for creating more polished and customizable plots. However, it usually
 requires more code and additional data preparation, especially for
 grouped plots like boxplots across multiple samples. When possible, we
-will stick to simpler base R plots to keep things clear, and introduce
+will stick to simpler base R plots to keep things clear and introduce
 ggplot2 when we want more flexibility or aesthetics, but for the sake of
 demonstration let us make a box plot with ggplot2.</p>
 <p>We will reuse the log2 intensities already stored in
@@ -2029,10 +2025,7 @@ focus on the first two principal components, since they explain the
 largest amount of variation, but additional components can also be
 explored.</p>
 <p>To run PCA, we need a numerical matrix with no missing values. First
-we will remove proteins missing in half or more of the samples. This is
-an overall coverage filter for this exercise; it can remove proteins
-detected only in one condition. A real study may need a group-aware
-filter or a method designed for detection differences.</p>
+we will remove proteins missing in half or more of the samples.</p>
 <pre class="r"><code>row_na_threshold = 0.5
 keep_rows = rowMeans(is.na(prot)) &lt; row_na_threshold
 coverage_summary = table(kept = keep_rows)
@@ -2042,11 +2035,9 @@ coverage_summary</code></pre>
 ##   180  7229</code></pre>
 <pre class="r"><code>prot = prot[keep_rows, , drop = FALSE]</code></pre>
 <p>For the visualization only, we will replace missing values with the
-minimum observed log2 intensity. This simple approach can create or
-exaggerate separation when missingness differs by group. We will retain
-the original missing values for statistical testing. Other imputation
-methods make different assumptions; this is a teaching shortcut, not a
-default recommendation for every dataset.</p>
+minimum observed log2 intensity (this approach can create or exaggerate
+separation when missingness differs by group). We will retain the
+original missing values for statistical testing.</p>
 <p><code>prcomp()</code> gives us the standard deviation of each
 principal component in <code>$sdev</code>. Square those values to get
 the variances. Divide each variance by the sum of all the component
@@ -2065,14 +2056,10 @@ prot_for_pca = t(prot_imputed)
 pca_result = prcomp(prot_for_pca, center = TRUE, scale. = TRUE)
 pc_variance = pca_result$sdev^2
 pct_variance = 100 * pc_variance / sum(pc_variance)</code></pre>
-<p>Centering subtracts each protein’s mean. Scaling divides by its
-standard deviation, putting proteins on comparable scales. This gives a
-low-variance protein as much starting weight as a high-variance protein,
-so it can also amplify noise. It is a choice we should check rather than
-an automatic improvement.</p>
-<p>Once PCA is complete, we will visualize the first two principal
-components in a scatter plot, colored by group using the values from
-meta$color.</p>
+<p>Centering subtracts each protein’s mean and scaling divides by its
+standard deviation, which puts proteins on comparable scales. Once PCA
+is complete, we will visualize the first two principal components in a
+scatter plot, colored by group using the values from meta$color.</p>
 <pre class="r"><code># Extract PCA scores
 pca_scores = pca_result$x
 
@@ -2098,9 +2085,7 @@ legend(
 <p>What a nice dataset! We can see distinct groups in the PCA. This is
 useful evidence of structure, but it does not prove that every
 difference is biological or predict how many proteins will pass an FDR
-cutoff. We should also check batch, run order, and missingness.
-Separation that follows genotype could still reflect a batch effect if
-every WT sample was run separately from every KO sample.</p>
+cutoff.</p>
 </div>
 <div id="heatmap" class="section level2">
 <h2>Heatmap</h2>
@@ -2123,9 +2108,7 @@ select the top 1000 proteins based on their standard deviation.</p>
 <p>To do this, we use the apply() function, which applies a function to
 either the rows or columns of a data frame. By setting MARGIN = 1, we
 tell R to apply the sd() (standard deviation) function to each row
-(i.e., each protein). Here we use the complete visualization matrix. If
-we calculated standard deviations on the original data instead, we would
-need na.rm = TRUE to ignore NAs.</p>
+(i.e., each protein).</p>
 <pre class="r"><code># Select top 1000 proteins by standard deviation
 protein_sds = apply(prot_imputed, MARGIN = 1, sd)
 top_proteins = head(names(sort(protein_sds, decreasing = TRUE)), 1000)
@@ -2166,8 +2149,8 @@ library(ComplexHeatmap)
 
 # Group colors (already defined in meta)
 legend_groups = unique(meta[, c(&quot;group&quot;, &quot;color&quot;)])
+# Create a named vector that maps each group name to its corresponding color.
 group_colors_named = setNames(legend_groups$color, legend_groups$group)
-
 # Define pastel but distinct hex colors
 geno_colors = c(
   # soft orange
@@ -2406,8 +2389,7 @@ anxa2_test</code></pre>
 ##  16.47403  16.41576</code></pre>
 <p>For the WT comparison, Anxa2 is lower in WT_TP and has a small
 p-value. The Atp2a2 group means are much closer together, and its
-p-value is much larger. Find the means and the 95% confidence interval
-in each test output. Which interval includes zero?</p>
+p-value is much larger.</p>
 <p>Use <code>$p.value</code> to pull out just the p-value.
 <code>p.value</code> is the name R gives it in the test result. In the
 full results table later, we name our column <code>pval</code>.</p>
@@ -2433,11 +2415,9 @@ protein_results$n_group2 = rowSums(!is.na(comparison_matrix[, group2_samples]))<
 already on the log2 scale, so we subtract the group means directly. That
 difference gives the log2 ratio of the geometric mean intensities.</p>
 <pre class="r"><code>protein_results$group2_group1_log2fc = protein_results$group2_mean - protein_results$group1_mean</code></pre>
-<p>Now we can repeat the same Welch t-test for every row. Welch’s test
-allows different variances in the two groups and needs at least two
-observed values per group. <code>tryCatch()</code> records
-<code>NA</code> if a test cannot run. We use the observed values here
-and skip missing intensities.</p>
+<p>Now we can repeat the same Welch t-test for every row.
+<code>tryCatch()</code> records <code>NA</code> if a test cannot
+run.</p>
 <pre class="r"><code>protein_results$pval = apply(comparison_matrix, 1, function(x) {
   x1 = x[group1_samples]
   x2 = x[group2_samples]
@@ -2455,10 +2435,6 @@ subset(protein_results, uniprot %in% c(&quot;P07356&quot;, &quot;O55143&quot;),
 <pre><code>##      uniprot  label group2_group1_log2fc         pval
 ## 868   O55143 Atp2a2           0.05827131 5.556744e-01
 ## 1065  P07356  Anxa2          -3.06585056 2.771544e-11</code></pre>
-<p>Do the two raw p-values match the ones we calculated by hand? Now
-pick a third accession from <code>protein_results</code>. Use the same
-sample names to make a boxplot and run a t-test for that protein, then
-check the p-value against the table.</p>
 <p>Testing thousands of proteins creates many opportunities for false
 positives. We will use the Benjamini–Hochberg adjustment to account for
 the number of tests. False discovery rate (FDR) control refers to the
@@ -2475,11 +2451,6 @@ table(protein_results$differentially_expressed)</code></pre>
 <pre><code>## 
 ## FALSE  TRUE 
 ##  6772   457</code></pre>
-<p>These cutoffs are choices for this workshop. A fold change is an
-effect size, but its biological importance depends on the protein and
-experiment. For studies with covariates, paired samples, or many
-contrasts, consider a model-based workflow such as limma rather than
-repeatedly applying this simple test.</p>
 </div>
 <div id="volcano-plot" class="section level2">
 <h2>Volcano plot</h2>
