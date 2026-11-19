@@ -18,7 +18,7 @@ https://github.com/pstew/mass_spec_multi-omics_2026/
 
 ### Workshop schedule
 
-#### Day 1 — Thursday, November 19
+#### Day 1 — Thursday, November 19 (EHSEB 5100C)
 
 | Time | Activity |
 |:--|:--|
@@ -30,7 +30,7 @@ https://github.com/pstew/mass_spec_multi-omics_2026/
 | 14:15-14:30 | Break |
 | 14:30-16:00 | Make volcano plots, run KEGG pathway enrichment, and save the results |
 
-#### Day 2 — Friday, November 20
+#### Day 2 — Friday, November 20 (EHSEB 2958)
 
 | Time | Activity |
 |:--|:--|
