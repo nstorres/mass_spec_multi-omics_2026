@@ -382,7 +382,7 @@ coverage_summary
 prot = prot[keep_rows, , drop = FALSE]
 ```
 
-For the visualization only, we will replace missing values with the minimum observed log2 intensity (this approach can create or exaggerate separation when missingness differs by group). We will retain the original missing values for statistical testing. 
+For the PCA and heatmap, we will replace missing values with the minimum observed log2 intensity in a separate matrix called `prot_imputed` (this approach can create or exaggerate separation when missingness differs by group). The `prot` table will keep its missing values for statistical testing. 
 
 `prcomp()` gives us the standard deviation of each principal component in `$sdev`. Square those values to get the variances. Divide each variance by the sum of all the component variances and multiply by 100 to get the percent variance explained by each component.
 
@@ -433,13 +433,11 @@ What a nice dataset! We can see distinct groups in the PCA. This is useful evide
 
 ## Heatmap
 
-Heatmaps are another useful way to visualize our data while performing hierarchical clustering. A heatmap shows the intensity of many features, such as proteins, across all samples, using color to represent relative abundance. Clustering is applied to both rows (features) and columns (samples) to group together those with similar expression patterns.
+Heatmaps are another useful way to visualize our data and identify patterns across samples. A heatmap uses color to represent protein abundance, with proteins in rows and samples in columns. We can also use hierarchical clustering to group proteins and samples with similar abundance patterns, making it easier to see differences between groups.
 
-We have already filtered proteins with poor coverage and made a complete matrix for visualization. We will use that same matrix for the heatmap so that the clustering does not fail because of missing values. Statistical testing later will use the unimputed data in prot.
+We have already filtered out proteins with poor coverage and created prot_imputed for PCA. We will use this same matrix for our heatmap so that missing values do not interfere with clustering. Rather than including every protein, we typically focus on those that vary the most across samples. Proteins with very little variation are less useful for distinguishing samples and can make patterns harder to see.
 
-We typically do not include all proteins in the heatmap. In any omics experiment, many features will not vary much across samples. Including these adds noise and makes patterns harder to see. Instead, we focus on a subset of the most variable features. One common approach is to use standard deviation to identify the most variable proteins. Here, we will select the top 1000 proteins based on their standard deviation. 
-
-To do this, we use the apply() function, which applies a function to either the rows or columns of a data frame. By setting MARGIN = 1, we tell R to apply the sd() (standard deviation) function to each row (i.e., each protein). 
+Here, we will select the 1,000 most variable proteins based on their standard deviation across samples. To do this, we will use R's apply() function, which lets us apply a function to every row or column of a matrix or data frame. Setting MARGIN = 1 tells R to work across rows, so apply(prot_imputed, 1, sd) calculates the standard deviation of each protein across all samples.
 
 ```{r}
 # Select top 1000 proteins by standard deviation
@@ -448,9 +446,7 @@ top_proteins = head(names(sort(protein_sds, decreasing = TRUE)), 1000)
 top_prot = prot_imputed[top_proteins, , drop = FALSE]
 ```
 
-
 Before plotting, we need to center and scale the data by performing a z-score transformation on each row. This step is important. Just like in PCA, large differences in raw intensity values can overwhelm the clustering and lead to misleading patterns. Without standardization, proteins with higher average abundance will cluster together not because they behave similarly across samples, but simply because their overall values are larger.
-
 
 ```{r}
 # Z-score normalization (row-wise)
