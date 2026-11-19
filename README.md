@@ -110,6 +110,3 @@ https://github.com/pstew/mass_spec_multi-omics_2026/
 
 Open [Day 2 R Markdown](scripts/Day02_SNF.Rmd).
 
-#### Wrap up
-
-(Minute card available end of second day)
