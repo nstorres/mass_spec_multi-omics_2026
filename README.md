@@ -10,7 +10,7 @@ Filipa Blasco Lopes, PhD (u6071085@utah.edu)
 
 ### Slido Link
 
-(Available day of workshop)
+https://app.sli.do/event/9J3yDJiS4gkgT6tDJXgFBF
 
 ### Link to this Repository:
 
