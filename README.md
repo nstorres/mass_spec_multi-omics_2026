@@ -1,5 +1,9 @@
 ## Introduction to Mass Spectrometry Data Analysis and Multi-Omics Integration Workshop 2026
 
+### Minute Card/Survey
+
+Please take a moment to give feedback about something you liked and something that could be improved: https://forms.gle/YaG2nqSFPXwe89pH8
+
 ### Instructors
 
 Paul Stewart, PhD (paul.stewart@hci.utah.edu)
